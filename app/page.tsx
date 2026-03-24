@@ -22,6 +22,16 @@ const topics = [
     href: "/otp",
   },
   {
+    title: "Todo App",
+    description:
+      "Build a todo app with add, delete, and complete features using useState.",
+    questions: 1,
+    difficulty: "Beginner",
+    color: "bg-yellow-50 border-yellow-200",
+    badge: "bg-yellow-100 text-yellow-700",
+    href: "/todo",
+  },
+  {
     title: "State Management",
     description: "Context API, Redux, Zustand, prop drilling, lifting state",
     questions: 8,
@@ -69,9 +79,13 @@ export default function Home() {
         <div className="max-w-5xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="text-2xl font-bold text-blue-600">⚛</span>
-            <span className="text-lg font-semibold text-gray-800">ReactPrep</span>
+            <span className="text-lg font-semibold text-gray-800">
+              ReactPrep
+            </span>
           </div>
-          <span className="text-sm text-gray-500">React Interview Assessment</span>
+          <span className="text-sm text-gray-500">
+            React Interview Assessment
+          </span>
         </div>
       </header>
 
@@ -131,15 +145,21 @@ export default function Home() {
                   className={`border rounded-xl p-5 hover:shadow-md transition-shadow h-full ${topic.color}`}
                 >
                   <div className="flex items-start justify-between mb-3">
-                    <h3 className="font-semibold text-gray-900">{topic.title}</h3>
+                    <h3 className="font-semibold text-gray-900">
+                      {topic.title}
+                    </h3>
                     <span
                       className={`text-xs font-medium px-2 py-0.5 rounded-full ${topic.badge}`}
                     >
                       {topic.questions}Q
                     </span>
                   </div>
-                  <p className="text-sm text-gray-600 mb-4">{topic.description}</p>
-                  <span className="text-xs text-gray-400">{topic.difficulty}</span>
+                  <p className="text-sm text-gray-600 mb-4">
+                    {topic.description}
+                  </p>
+                  <span className="text-xs text-gray-400">
+                    {topic.difficulty}
+                  </span>
                 </div>
               </Link>
             ))}
