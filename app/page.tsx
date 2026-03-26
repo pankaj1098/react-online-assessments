@@ -34,11 +34,11 @@ const topics = [
   {
     title: "State Management",
     description: "Context API, Redux, Zustand, prop drilling, lifting state",
-    questions: 8,
+    questions: 16,
     difficulty: "Intermediate–Advanced",
     color: "bg-green-50 border-green-200",
     badge: "bg-green-100 text-green-700",
-    href: "#",
+    href: "/state-management",
   },
   {
     title: "Performance",
