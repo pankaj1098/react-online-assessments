@@ -100,6 +100,186 @@ export default function TodoPage() {
             </p>
           )}
         </div>
+
+        {/* Code Explanation */}
+        <div className="mt-8 bg-white border border-gray-200 rounded-xl p-6">
+          <h2 className="text-sm font-semibold text-gray-700 mb-4">How it works</h2>
+
+          <div className="space-y-4">
+            {/* Snippet 1 */}
+            <div>
+              <p className="font-medium text-gray-600 text-xs mb-1">1. State — storing todos and input</p>
+              <pre style={{ background: "#1e1e1e", borderRadius: "6px", padding: "12px 14px", overflowX: "auto", fontSize: "11.5px", lineHeight: "1.7", fontFamily: 'Consolas, "Courier New", monospace', margin: 0 }}>
+                <span style={{ color: "#569cd6" }}>const</span>
+                <span style={{ color: "#d4d4d4" }}> [</span>
+                <span style={{ color: "#9cdcfe" }}>todos</span>
+                <span style={{ color: "#d4d4d4" }}>, </span>
+                <span style={{ color: "#9cdcfe" }}>setTodos</span>
+                <span style={{ color: "#d4d4d4" }}>] = </span>
+                <span style={{ color: "#dcdcaa" }}>useState</span>
+                <span style={{ color: "#d4d4d4" }}>(</span>
+                <span style={{ color: "#d4d4d4" }}>[])</span>
+                <span style={{ color: "#d4d4d4" }}>;</span>
+                {"\n"}
+                <span style={{ color: "#569cd6" }}>const</span>
+                <span style={{ color: "#d4d4d4" }}> [</span>
+                <span style={{ color: "#9cdcfe" }}>input</span>
+                <span style={{ color: "#d4d4d4" }}>, </span>
+                <span style={{ color: "#9cdcfe" }}>setInput</span>
+                <span style={{ color: "#d4d4d4" }}>]  = </span>
+                <span style={{ color: "#dcdcaa" }}>useState</span>
+                <span style={{ color: "#d4d4d4" }}>(</span>
+                <span style={{ color: "#ce9178" }}>{`""`}</span>
+                <span style={{ color: "#d4d4d4" }}>);</span>
+              </pre>
+            </div>
+
+            {/* Snippet 2 */}
+            <div>
+              <p className="font-medium text-gray-600 text-xs mb-1">2. Adding a todo</p>
+              <pre style={{ background: "#1e1e1e", borderRadius: "6px", padding: "12px 14px", overflowX: "auto", fontSize: "11.5px", lineHeight: "1.7", fontFamily: 'Consolas, "Courier New", monospace', margin: 0 }}>
+                <span style={{ color: "#569cd6" }}>const</span>
+                <span style={{ color: "#d4d4d4" }}> </span>
+                <span style={{ color: "#dcdcaa" }}>addTodo</span>
+                <span style={{ color: "#d4d4d4" }}> = () </span>
+                <span style={{ color: "#569cd6" }}>=&gt;</span>
+                <span style={{ color: "#d4d4d4" }}> {"{"}</span>
+                {"\n"}
+                <span style={{ color: "#d4d4d4" }}>{"  "}</span>
+                <span style={{ color: "#569cd6" }}>const</span>
+                <span style={{ color: "#d4d4d4" }}> </span>
+                <span style={{ color: "#9cdcfe" }}>trimmed</span>
+                <span style={{ color: "#d4d4d4" }}> = </span>
+                <span style={{ color: "#9cdcfe" }}>input</span>
+                <span style={{ color: "#d4d4d4" }}>.</span>
+                <span style={{ color: "#dcdcaa" }}>trim</span>
+                <span style={{ color: "#d4d4d4" }}>();</span>
+                {"\n"}
+                <span style={{ color: "#d4d4d4" }}>{"  "}</span>
+                <span style={{ color: "#c586c0" }}>if</span>
+                <span style={{ color: "#d4d4d4" }}> (!</span>
+                <span style={{ color: "#9cdcfe" }}>trimmed</span>
+                <span style={{ color: "#d4d4d4" }}>) </span>
+                <span style={{ color: "#c586c0" }}>return</span>
+                <span style={{ color: "#d4d4d4" }}>;</span>
+                {"\n"}
+                <span style={{ color: "#d4d4d4" }}>{"  "}</span>
+                <span style={{ color: "#dcdcaa" }}>setTodos</span>
+                <span style={{ color: "#d4d4d4" }}>([...</span>
+                <span style={{ color: "#9cdcfe" }}>todos</span>
+                <span style={{ color: "#d4d4d4" }}>, {"{ "}</span>
+                <span style={{ color: "#9cdcfe" }}>id</span>
+                <span style={{ color: "#d4d4d4" }}>: </span>
+                <span style={{ color: "#9cdcfe" }}>Date</span>
+                <span style={{ color: "#d4d4d4" }}>.</span>
+                <span style={{ color: "#dcdcaa" }}>now</span>
+                <span style={{ color: "#d4d4d4" }}>(), </span>
+                <span style={{ color: "#9cdcfe" }}>text</span>
+                <span style={{ color: "#d4d4d4" }}>: </span>
+                <span style={{ color: "#9cdcfe" }}>trimmed</span>
+                <span style={{ color: "#d4d4d4" }}>, </span>
+                <span style={{ color: "#9cdcfe" }}>completed</span>
+                <span style={{ color: "#d4d4d4" }}>: </span>
+                <span style={{ color: "#569cd6" }}>false</span>
+                <span style={{ color: "#d4d4d4" }}>{" }]);"}</span>
+                {"\n"}
+                <span style={{ color: "#d4d4d4" }}>{"  "}</span>
+                <span style={{ color: "#dcdcaa" }}>setInput</span>
+                <span style={{ color: "#d4d4d4" }}>(</span>
+                <span style={{ color: "#ce9178" }}>{`""`}</span>
+                <span style={{ color: "#d4d4d4" }}>);</span>
+                {"\n"}
+                <span style={{ color: "#d4d4d4" }}>{"}"}</span>
+                <span style={{ color: "#d4d4d4" }}>;</span>
+              </pre>
+            </div>
+
+            {/* Snippet 3 */}
+            <div>
+              <p className="font-medium text-gray-600 text-xs mb-1">3. Toggling completed state</p>
+              <pre style={{ background: "#1e1e1e", borderRadius: "6px", padding: "12px 14px", overflowX: "auto", fontSize: "11.5px", lineHeight: "1.7", fontFamily: 'Consolas, "Courier New", monospace', margin: 0 }}>
+                <span style={{ color: "#569cd6" }}>const</span>
+                <span style={{ color: "#d4d4d4" }}> </span>
+                <span style={{ color: "#dcdcaa" }}>toggleTodo</span>
+                <span style={{ color: "#d4d4d4" }}> = (</span>
+                <span style={{ color: "#9cdcfe" }}>id</span>
+                <span style={{ color: "#d4d4d4" }}>) </span>
+                <span style={{ color: "#569cd6" }}>=&gt;</span>
+                <span style={{ color: "#d4d4d4" }}> {"{"}</span>
+                {"\n"}
+                <span style={{ color: "#d4d4d4" }}>{"  "}</span>
+                <span style={{ color: "#dcdcaa" }}>setTodos</span>
+                <span style={{ color: "#d4d4d4" }}>(</span>
+                <span style={{ color: "#9cdcfe" }}>todos</span>
+                <span style={{ color: "#d4d4d4" }}>.</span>
+                <span style={{ color: "#dcdcaa" }}>map</span>
+                <span style={{ color: "#d4d4d4" }}>((</span>
+                <span style={{ color: "#9cdcfe" }}>t</span>
+                <span style={{ color: "#d4d4d4" }}>) </span>
+                <span style={{ color: "#569cd6" }}>=&gt;</span>
+                {"\n"}
+                <span style={{ color: "#d4d4d4" }}>{"    "}</span>
+                <span style={{ color: "#9cdcfe" }}>t</span>
+                <span style={{ color: "#d4d4d4" }}>.</span>
+                <span style={{ color: "#9cdcfe" }}>id</span>
+                <span style={{ color: "#d4d4d4" }}> === </span>
+                <span style={{ color: "#9cdcfe" }}>id</span>
+                <span style={{ color: "#d4d4d4" }}> ? </span>
+                <span style={{ color: "#d4d4d4" }}>{"{ ..."}</span>
+                <span style={{ color: "#9cdcfe" }}>t</span>
+                <span style={{ color: "#d4d4d4" }}>, </span>
+                <span style={{ color: "#9cdcfe" }}>completed</span>
+                <span style={{ color: "#d4d4d4" }}>: !</span>
+                <span style={{ color: "#9cdcfe" }}>t</span>
+                <span style={{ color: "#d4d4d4" }}>.</span>
+                <span style={{ color: "#9cdcfe" }}>completed</span>
+                <span style={{ color: "#d4d4d4" }}>{" }"} : </span>
+                <span style={{ color: "#9cdcfe" }}>t</span>
+                {"\n"}
+                <span style={{ color: "#d4d4d4" }}>{"  ));"}</span>
+                {"\n"}
+                <span style={{ color: "#d4d4d4" }}>{"}"}</span>
+                <span style={{ color: "#d4d4d4" }}>;</span>
+              </pre>
+            </div>
+
+            {/* Snippet 4 */}
+            <div>
+              <p className="font-medium text-gray-600 text-xs mb-1">4. Deleting a todo</p>
+              <pre style={{ background: "#1e1e1e", borderRadius: "6px", padding: "12px 14px", overflowX: "auto", fontSize: "11.5px", lineHeight: "1.7", fontFamily: 'Consolas, "Courier New", monospace', margin: 0 }}>
+                <span style={{ color: "#569cd6" }}>const</span>
+                <span style={{ color: "#d4d4d4" }}> </span>
+                <span style={{ color: "#dcdcaa" }}>deleteTodo</span>
+                <span style={{ color: "#d4d4d4" }}> = (</span>
+                <span style={{ color: "#9cdcfe" }}>id</span>
+                <span style={{ color: "#d4d4d4" }}>) </span>
+                <span style={{ color: "#569cd6" }}>=&gt;</span>
+                <span style={{ color: "#d4d4d4" }}> {"{"}</span>
+                {"\n"}
+                <span style={{ color: "#d4d4d4" }}>{"  "}</span>
+                <span style={{ color: "#dcdcaa" }}>setTodos</span>
+                <span style={{ color: "#d4d4d4" }}>(</span>
+                <span style={{ color: "#9cdcfe" }}>todos</span>
+                <span style={{ color: "#d4d4d4" }}>.</span>
+                <span style={{ color: "#dcdcaa" }}>filter</span>
+                <span style={{ color: "#d4d4d4" }}>((</span>
+                <span style={{ color: "#9cdcfe" }}>t</span>
+                <span style={{ color: "#d4d4d4" }}>) </span>
+                <span style={{ color: "#569cd6" }}>=&gt;</span>
+                <span style={{ color: "#d4d4d4" }}> </span>
+                <span style={{ color: "#9cdcfe" }}>t</span>
+                <span style={{ color: "#d4d4d4" }}>.</span>
+                <span style={{ color: "#9cdcfe" }}>id</span>
+                <span style={{ color: "#d4d4d4" }}> !== </span>
+                <span style={{ color: "#9cdcfe" }}>id</span>
+                <span style={{ color: "#d4d4d4" }}>));</span>
+                {"\n"}
+                <span style={{ color: "#d4d4d4" }}>{"}"}</span>
+                <span style={{ color: "#d4d4d4" }}>;</span>
+              </pre>
+            </div>
+          </div>
+        </div>
       </div>
     </main>
   );
