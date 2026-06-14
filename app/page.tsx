@@ -32,6 +32,16 @@ const topics = [
     href: "/todo",
   },
   {
+    title: "Traffic Light System",
+    description:
+      "Build an auto-cycling traffic light (Red → Green → Yellow → Red) with configurable durations using useState, useRef, and setInterval.",
+    questions: 1,
+    difficulty: "Beginner",
+    color: "bg-red-50 border-red-200",
+    badge: "bg-red-100 text-red-700",
+    href: "/traffic-light",
+  },
+  {
     title: "State Management",
     description: "Context API, Redux, Zustand, prop drilling, lifting state",
     questions: 16,
