@@ -1,0 +1,3078 @@
+ABIS PRO ADMIN CONSOLE - USERS: ROW ACTION BUTTONS (27 files written, 1 deleted)
+======================================================================
+Edit user profile page (addresses + social identities), OTP login lock, referral information, user orders page,
+wallet transactions window and force update toggle.
+
+Apply from the project root: node apply-bundle.mjs users-actions-bundle.txt   (add --dry-run first)
+Then: npm run typecheck && npm run lint && npm run build
+Needs the useTableBodyHeight hook (table-height-bundle.txt) and the updated apply-bundle.mjs (handles DELETE).
+
+===== DELETE: src/features/users/components/UserFormDrawer.tsx =====
+
+FILE LIST
+  1. src/lib/zod-fields.ts
+  2. src/components/ui/RowActions.tsx
+  3. src/app/modules.tsx
+  4. src/features/users/constants.ts
+  5. src/features/users/types.ts
+  6. src/features/users/schemas/user.schema.ts
+  7. src/features/users/schemas/profile.schema.ts
+  8. src/features/users/schemas/address.schema.ts
+  9. src/features/users/schemas/social-identity.schema.ts
+ 10. src/features/users/api/mock-users.ts
+ 11. src/features/users/api/query-keys.ts
+ 12. src/features/users/api/users-cache.ts
+ 13. src/features/users/api/users-api.ts
+ 14. src/features/users/api/user-activity-api.ts
+ 15. src/features/users/components/UserActionButtons.tsx
+ 16. src/features/users/components/UsersTable.tsx
+ 17. src/features/users/components/ReferralModal.tsx
+ 18. src/features/users/components/WalletTransactionsModal.tsx
+ 19. src/features/users/components/AddressFormDrawer.tsx
+ 20. src/features/users/components/AddressesSection.tsx
+ 21. src/features/users/components/SocialIdentityFormDrawer.tsx
+ 22. src/features/users/components/SocialIdentitiesSection.tsx
+ 23. src/features/users/components/UserOrdersTable.tsx
+ 24. src/features/users/pages/EditUserPage.tsx
+ 25. src/features/users/pages/UserOrdersPage.tsx
+ 26. src/features/users/pages/UsersPage.tsx
+ 27. src/features/users/users.css
+
+===== FILE: src/lib/zod-fields.ts =====
+import dayjs, { type Dayjs } from 'dayjs';
+import { z } from 'zod';
+
+/**
+ * Small building blocks shared by the Zod schemas of different forms,
+ * so every form words its messages and handles empty input the same way.
+ */
+
+/** Required text: trimmed, not empty, with a maximum length. */
+export function requiredText(message: string, max: number) {
+  return z.string({ error: message }).trim().min(1, message).max(max, `Use ${max} characters or fewer`);
+}
+
+/** Optional text: empty input becomes `undefined` in the payload. */
+export function optionalText(max: number) {
+  return z
+    .string()
+    .trim()
+    .max(max, `Use ${max} characters or fewer`)
+    .nullish()
+    .transform((value) => value || undefined);
+}
+
+function isValidDate(value: unknown): value is Dayjs {
+  return dayjs.isDayjs(value) && value.isValid();
+}
+
+/**
+ * Required date and time. The form holds a dayjs value (what Ant Design's DatePicker gives us),
+ * the payload gets an ISO text such as "2026-12-01T09:30:00.000Z".
+ */
+export function requiredDateTime(message: string) {
+  return z.custom<Dayjs>(isValidDate, { error: message }).transform((value) => value.toISOString());
+}
+
+/** Optional date and time. Empty input becomes `undefined` in the payload. */
+export function optionalDateTime(message: string) {
+  return z
+    .custom<Dayjs>(isValidDate, { error: message })
+    .nullish()
+    .transform((value) => value?.toISOString());
+}
+
+/**
+ * Optional date that is today or earlier, such as a birthday. The form holds a dayjs value (what the DatePicker
+ * gives us), the payload gets "2026-12-25". Empty input becomes `undefined`.
+ */
+export function optionalPastDate() {
+  return z
+    .custom<Dayjs>(isValidDate, { error: 'Pick a date' })
+    .nullish()
+    .refine((value) => !value || !value.isAfter(dayjs(), 'day'), 'The date can not be in the future')
+    .transform((value) => value?.format('YYYY-MM-DD'));
+}
+
+/** Optional whole number from 0 up to `max`. Empty input becomes `undefined`. */
+export function optionalWholeNumber(max = 1_000_000) {
+  return z
+    .number({ error: 'Enter a number' })
+    .int('Use a whole number')
+    .min(0, 'Use 0 or more')
+    .max(max, `Use ${max} or less`)
+    .nullish()
+    .transform((value) => value ?? undefined);
+}
+
+/** Optional amount of money (or any decimal number) from 0 up to `max`. Empty input becomes `undefined`. */
+export function optionalAmount(max = 10_000_000) {
+  return z
+    .number({ error: 'Enter a number' })
+    .min(0, 'Use 0 or more')
+    .max(max, `Use ${max} or less`)
+    .nullish()
+    .transform((value) => value ?? undefined);
+}
+
+/** Optional percentage from 0 to 100. Empty input becomes `undefined`. */
+export function optionalPercent() {
+  return z
+    .number({ error: 'Enter a number' })
+    .min(0, 'Use 0 or more')
+    .max(100, 'Use 100 or less')
+    .nullish()
+    .transform((value) => value ?? undefined);
+}
+
+function isJsonObject(text: string | undefined): boolean {
+  if (!text) return true;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Optional JSON typed into a text box. It must be an object such as {"key": "value"}.
+ * The payload gets the parsed object, or `undefined` when the box is empty.
+ */
+export function optionalJsonObject(maxLength = 5000) {
+  return optionalText(maxLength)
+    .refine(isJsonObject, 'Enter a valid JSON object, for example {"key": "value"}')
+    .transform((text) => (text ? (JSON.parse(text) as Record<string, unknown>) : undefined));
+}
+===== END FILE: src/lib/zod-fields.ts =====
+
+===== FILE: src/components/ui/RowActions.tsx =====
+import { DeleteOutlined, EditOutlined } from '@ant-design/icons';
+import { Button, Flex, Popconfirm, Tooltip } from 'antd';
+import type { ReactNode } from 'react';
+
+type RowActionsProps = {
+  /** Name of the row, used in button labels and in the delete question, for example "Chicken". */
+  name: string;
+  /** Short word for what the row is, for example "category". */
+  what: string;
+  onEdit: () => void;
+  onDelete: () => void;
+  /** More buttons, shown before Edit. */
+  extra?: ReactNode;
+  /** Text under the delete question. Change it when the row is not removed for good right away. */
+  deleteDescription?: string;
+};
+
+/**
+ * The Edit and Delete buttons at the end of a table row. Delete asks "are you sure?" first.
+ * Hiding a button is not security: the server must check who may edit or delete.
+ */
+export function RowActions({ name, what, onEdit, onDelete, extra, deleteDescription }: RowActionsProps) {
+  return (
+    <Flex align="center" gap={4}>
+      {extra}
+      <Tooltip title={`Edit ${what}`}>
+        <Button size="small" type="text" icon={<EditOutlined />} aria-label={`Edit ${name}`} onClick={onEdit} />
+      </Tooltip>
+      <Popconfirm
+        title={`Delete this ${what}?`}
+        description={deleteDescription ?? `"${name}" will be removed permanently.`}
+        okText="Delete"
+        okButtonProps={{ danger: true }}
+        cancelText="Cancel"
+        placement="topRight"
+        onConfirm={onDelete}
+      >
+        <Tooltip title={`Delete ${what}`}>
+          <Button size="small" type="text" danger icon={<DeleteOutlined />} aria-label={`Delete ${name}`} />
+        </Tooltip>
+      </Popconfirm>
+    </Flex>
+  );
+}
+===== END FILE: src/components/ui/RowActions.tsx =====
+
+===== FILE: src/app/modules.tsx =====
+import {
+  AppstoreOutlined,
+  DashboardOutlined,
+  FileTextOutlined,
+  GiftOutlined,
+  NotificationOutlined,
+  PictureOutlined,
+  SettingOutlined,
+  ShopOutlined,
+  ShoppingCartOutlined,
+  TagsOutlined,
+  TeamOutlined,
+  UserOutlined,
+} from '@ant-design/icons';
+import type { ComponentType, ReactNode } from 'react';
+import { matchPath } from 'react-router-dom';
+
+/**
+ * Every module (page) of the admin portal, in ONE place.
+ * The sidebar, the router and the header title all read from this file.
+ *
+ * To add a new module: add one entry below. Nothing else needs to change.
+ */
+
+export type AppModule = {
+  /** URL path and menu key. 'orders' → /orders */
+  key: string;
+  /** Text in the sidebar and in the header title */
+  label: string;
+  icon: ReactNode;
+  /** Loads the page only when it's opened (keeps the first download small) */
+  loadPage: () => Promise<{ default: ComponentType }>;
+};
+
+export type ModuleGroup = {
+  label: string;
+  modules: AppModule[];
+};
+
+export const dashboardModule: AppModule = {
+  key: 'dashboard',
+  label: 'Dashboard',
+  icon: <DashboardOutlined />,
+  loadPage: () => import('@/features/dashboard/pages/DashboardPage'),
+};
+
+export const moduleGroups: ModuleGroup[] = [
+  {
+    label: 'Sales',
+    modules: [
+      {
+        key: 'orders',
+        label: 'Orders',
+        icon: <ShoppingCartOutlined />,
+        loadPage: () => import('@/features/orders/pages/OrdersPage'),
+      },
+      {
+        key: 'reports',
+        label: 'Order Reports',
+        icon: <FileTextOutlined />,
+        loadPage: () => import('@/features/reports/pages/ReportsPage'),
+      },
+    ],
+  },
+  {
+    label: 'Catalog',
+    modules: [
+      {
+        key: 'apps',
+        label: 'Apps',
+        icon: <AppstoreOutlined />,
+        loadPage: () => import('@/features/apps/pages/AppsPage'),
+      },
+      {
+        key: 'outlets',
+        label: 'Outlets',
+        icon: <ShopOutlined />,
+        loadPage: () => import('@/features/outlets/pages/OutletsPage'),
+      },
+      {
+        key: 'catalogs',
+        label: 'Catalogs',
+        icon: <TagsOutlined />,
+        loadPage: () => import('@/features/catalogs/pages/CatalogsPage'),
+      },
+      {
+        key: 'galleries',
+        label: 'Galleries',
+        icon: <PictureOutlined />,
+        loadPage: () => import('@/features/galleries/pages/GalleriesPage'),
+      },
+    ],
+  },
+  {
+    label: 'People',
+    modules: [
+      {
+        key: 'users',
+        label: 'Users',
+        icon: <UserOutlined />,
+        loadPage: () => import('@/features/users/pages/UsersPage'),
+      },
+      {
+        key: 'operators',
+        label: 'Operators',
+        icon: <TeamOutlined />,
+        loadPage: () => import('@/features/operators/pages/OperatorsPage'),
+      },
+    ],
+  },
+  {
+    label: 'Marketing',
+    modules: [
+      {
+        key: 'coupons',
+        label: 'Coupons',
+        icon: <GiftOutlined />,
+        loadPage: () => import('@/features/coupons/pages/CouponsPage'),
+      },
+      {
+        key: 'campaigns',
+        label: 'Campaigns',
+        icon: <NotificationOutlined />,
+        loadPage: () => import('@/features/campaigns/pages/CampaignsPage'),
+      },
+      // To show it again, also add WalletOutlined back to the icon import at the top.
+      // {
+      //   key: 'wallet-credits',
+      //   label: 'Wallet Bonus Credits',
+      //   icon: <WalletOutlined />,
+      //   loadPage: () => import('@/features/wallet-credits/pages/WalletCreditsPage'),
+      // },
+    ],
+  },
+];
+
+/** Pinned at the bottom of the sidebar */
+export const settingsModule: AppModule = {
+  key: 'settings',
+  label: 'Settings',
+  icon: <SettingOutlined />,
+  loadPage: () => import('@/features/settings/pages/SettingsPage'),
+};
+
+/** Pages that exist but are not in the sidebar */
+export const profilePage: AppModule = {
+  key: 'profile',
+  label: 'Profile',
+  icon: <UserOutlined />,
+  loadPage: () => import('@/features/auth/pages/ProfilePage'),
+};
+
+export const createOutletPage: AppModule = {
+  key: 'outlets/new',
+  label: 'Create outlet',
+  icon: <ShopOutlined />,
+  loadPage: () => import('@/features/outlets/pages/CreateOutletPage'),
+};
+
+/**
+ * Pages of the Apps module that are not in the sidebar.
+ * A key like 'apps/:appId/edit' has a changing part: ':appId' is replaced by the app's id in the address.
+ */
+export const createAppPage: AppModule = {
+  key: 'apps/new',
+  label: 'Create app',
+  icon: <AppstoreOutlined />,
+  loadPage: () => import('@/features/apps/pages/AppFormPage'),
+};
+
+export const editAppPage: AppModule = {
+  key: 'apps/:appId/edit',
+  label: 'Edit app',
+  icon: <AppstoreOutlined />,
+  loadPage: () => import('@/features/apps/pages/AppFormPage'),
+};
+
+export const bannersPage: AppModule = {
+  key: 'apps/:appId/banners',
+  label: 'Banners',
+  icon: <PictureOutlined />,
+  loadPage: () => import('@/features/apps/pages/BannersPage'),
+};
+
+export const createBannerPage: AppModule = {
+  key: 'apps/:appId/banners/new',
+  label: 'Create banner',
+  icon: <PictureOutlined />,
+  loadPage: () => import('@/features/apps/pages/CreateBannerPage'),
+};
+
+export const manageCatalogPage: AppModule = {
+  key: 'catalogs/:catalogId/manage',
+  label: 'Manage catalog',
+  icon: <TagsOutlined />,
+  loadPage: () => import('@/features/catalogs/pages/ManageCatalogPage'),
+};
+
+export const masterMappingPage: AppModule = {
+  key: 'catalogs/master-mapping',
+  label: 'Master mapping',
+  icon: <TagsOutlined />,
+  loadPage: () => import('@/features/catalogs/pages/MasterMappingPage'),
+};
+
+export const createGalleryPage: AppModule = {
+  key: 'galleries/new',
+  label: 'Create gallery',
+  icon: <PictureOutlined />,
+  loadPage: () => import('@/features/galleries/pages/GalleryFormPage'),
+};
+
+export const editGalleryPage: AppModule = {
+  key: 'galleries/:galleryId/edit',
+  label: 'Edit gallery',
+  icon: <PictureOutlined />,
+  loadPage: () => import('@/features/galleries/pages/GalleryFormPage'),
+};
+
+export const createMediaItemPage: AppModule = {
+  key: 'galleries/:galleryId/media/new',
+  label: 'Add media item',
+  icon: <PictureOutlined />,
+  loadPage: () => import('@/features/galleries/pages/MediaItemFormPage'),
+};
+
+export const editMediaItemPage: AppModule = {
+  key: 'galleries/:galleryId/media/:mediaId/edit',
+  label: 'Edit media item',
+  icon: <PictureOutlined />,
+  loadPage: () => import('@/features/galleries/pages/MediaItemFormPage'),
+};
+
+/** Pages of the Coupons module that are not in the sidebar. */
+export const createCouponPage: AppModule = {
+  key: 'coupons/new',
+  label: 'Create coupon',
+  icon: <GiftOutlined />,
+  loadPage: () => import('@/features/coupons/pages/CouponFormPage'),
+};
+
+export const editCouponPage: AppModule = {
+  key: 'coupons/:couponId/edit',
+  label: 'Edit coupon',
+  icon: <GiftOutlined />,
+  loadPage: () => import('@/features/coupons/pages/CouponFormPage'),
+};
+
+export const couponTasksPage: AppModule = {
+  key: 'coupons/tasks',
+  label: 'Coupon bulk update tasks',
+  icon: <GiftOutlined />,
+  loadPage: () => import('@/features/coupons/pages/CouponTasksPage'),
+};
+
+export const newCouponTaskPage: AppModule = {
+  key: 'coupons/tasks/new',
+  label: 'New coupon bulk update task',
+  icon: <GiftOutlined />,
+  loadPage: () => import('@/features/coupons/pages/NewCouponTaskPage'),
+};
+
+export const couponTaskDetailsPage: AppModule = {
+  key: 'coupons/tasks/:taskId',
+  label: 'Coupon bulk update task',
+  icon: <GiftOutlined />,
+  loadPage: () => import('@/features/coupons/pages/CouponTaskDetailsPage'),
+};
+
+/** Pages of the Campaigns module that are not in the sidebar. */
+export const newCampaignPage: AppModule = {
+  key: 'campaigns/new',
+  label: 'New campaign',
+  icon: <NotificationOutlined />,
+  loadPage: () => import('@/features/campaigns/pages/NewCampaignPage'),
+};
+
+export const campaignDetailsPage: AppModule = {
+  key: 'campaigns/:campaignId',
+  label: 'Campaign details',
+  icon: <NotificationOutlined />,
+  loadPage: () => import('@/features/campaigns/pages/CampaignDetailsPage'),
+};
+
+/** Pages of the Operators module that are not in the sidebar. */
+export const createOperatorPage: AppModule = {
+  key: 'operators/new',
+  label: 'Add operator',
+  icon: <TeamOutlined />,
+  loadPage: () => import('@/features/operators/pages/OperatorFormPage'),
+};
+
+export const editOperatorPage: AppModule = {
+  key: 'operators/:operatorId/edit',
+  label: 'Edit operator',
+  icon: <TeamOutlined />,
+  loadPage: () => import('@/features/operators/pages/OperatorFormPage'),
+};
+
+/** Pages of the Users module that are not in the sidebar. */
+export const forceUpdateUsersPage: AppModule = {
+  key: 'users/force-update',
+  label: 'Force update users',
+  icon: <UserOutlined />,
+  loadPage: () => import('@/features/users/pages/ForceUpdatePage'),
+};
+
+export const editUserPage: AppModule = {
+  key: 'users/:userId/edit',
+  label: 'Edit user profile',
+  icon: <UserOutlined />,
+  loadPage: () => import('@/features/users/pages/EditUserPage'),
+};
+
+export const userOrdersPage: AppModule = {
+  key: 'users/:userId/orders',
+  label: 'User orders',
+  icon: <UserOutlined />,
+  loadPage: () => import('@/features/users/pages/UserOrdersPage'),
+};
+
+export const nonServiceableUsersPage: AppModule = {
+  key: 'users/non-serviceable',
+  label: 'Non serviceable users',
+  icon: <UserOutlined />,
+  loadPage: () => import('@/features/users/pages/NonServiceablePage'),
+};
+
+export const userTasksPage: AppModule = {
+  key: 'users/tasks',
+  label: 'Import / export tasks',
+  icon: <UserOutlined />,
+  loadPage: () => import('@/features/users/pages/TasksPage'),
+};
+
+export const newUserTaskPage: AppModule = {
+  key: 'users/tasks/new',
+  label: 'New bulk update task',
+  icon: <UserOutlined />,
+  loadPage: () => import('@/features/users/pages/NewTaskPage'),
+};
+
+export const userTaskDetailsPage: AppModule = {
+  key: 'users/tasks/:taskId',
+  label: 'Bulk update task',
+  icon: <UserOutlined />,
+  loadPage: () => import('@/features/users/pages/TaskDetailsPage'),
+};
+
+export const allPages: AppModule[] = [
+  dashboardModule,
+  ...moduleGroups.flatMap((group) => group.modules),
+  settingsModule,
+  profilePage,
+  createOutletPage,
+  createAppPage,
+  editAppPage,
+  bannersPage,
+  createBannerPage,
+  manageCatalogPage,
+  masterMappingPage,
+  createGalleryPage,
+  editGalleryPage,
+  createMediaItemPage,
+  editMediaItemPage,
+  createOperatorPage,
+  editOperatorPage,
+  createCouponPage,
+  editCouponPage,
+  couponTasksPage,
+  newCouponTaskPage,
+  couponTaskDetailsPage,
+  // 'campaigns/new' must come before 'campaigns/:campaignId', or the header would say "Campaign details".
+  newCampaignPage,
+  campaignDetailsPage,
+  forceUpdateUsersPage,
+  editUserPage,
+  userOrdersPage,
+  nonServiceableUsersPage,
+  userTasksPage,
+  newUserTaskPage,
+  userTaskDetailsPage,
+];
+
+const pageTitles = new Map(allPages.map((page) => [page.key, page.label]));
+
+/** '/orders/123' → 'orders' */
+export function getModuleKey(pathname: string): string {
+  return pathname.split('/')[1] ?? '';
+}
+
+/**
+ * '/orders' → 'Orders', '/outlets/new' → 'Create outlet', '/apps/42/edit' → 'Edit app'.
+ * Looks for a page that matches the full address first, then falls back to the module
+ * ('/orders/123' → 'Orders').
+ */
+export function getPageTitle(pathname: string): string {
+  const page = allPages.find((candidate) => matchPath(`/${candidate.key}`, pathname));
+  return page?.label ?? pageTitles.get(getModuleKey(pathname)) ?? '';
+}
+===== END FILE: src/app/modules.tsx =====
+
+===== FILE: src/features/users/constants.ts =====
+/** What the search box on the Manage Users page can search by. */
+export const USER_SEARCH_FIELDS = ['email', 'phone', 'name'] as const;
+export type UserSearchField = (typeof USER_SEARCH_FIELDS)[number];
+
+export const USER_SEARCH_OPTIONS: { value: UserSearchField; label: string }[] = [
+  { value: 'email', label: 'Email' },
+  { value: 'phone', label: 'Phone number' },
+  { value: 'name', label: 'Name' },
+];
+
+/** The hint shown in the search box for each "search by" choice. */
+export const USER_SEARCH_PLACEHOLDERS = new Map<UserSearchField, string>([
+  ['email', 'Search by email address'],
+  ['phone', 'Search by phone number (digits only)'],
+  ['name', 'Search by name'],
+]);
+
+/** A bulk task either adds users from a CSV file (import) or creates a CSV file of users (export). */
+export const TASK_TYPES = ['import', 'export'] as const;
+export type TaskType = (typeof TASK_TYPES)[number];
+
+export const TASK_STATES = ['PENDING', 'IN_PROGRESS', 'COMPLETED', 'FAILED'] as const;
+export type TaskState = (typeof TASK_STATES)[number];
+
+/** Choices on the Edit user page. TODO: confirm the lists with the backend team. */
+export const MARITAL_STATUSES = ['single', 'married', 'divorced', 'widowed'] as const;
+export type MaritalStatus = (typeof MARITAL_STATUSES)[number];
+
+export const MARITAL_STATUS_OPTIONS: { value: MaritalStatus; label: string }[] = [
+  { value: 'single', label: 'Single' },
+  { value: 'married', label: 'Married' },
+  { value: 'divorced', label: 'Divorced' },
+  { value: 'widowed', label: 'Widowed' },
+];
+
+export const ADDRESS_TYPES = ['home', 'work', 'other'] as const;
+export type AddressType = (typeof ADDRESS_TYPES)[number];
+
+export const ADDRESS_TYPE_OPTIONS: { value: AddressType; label: string }[] = [
+  { value: 'home', label: 'Home' },
+  { value: 'work', label: 'Work' },
+  { value: 'other', label: 'Other' },
+];
+
+export const SOCIAL_PROVIDERS = ['google', 'facebook', 'apple'] as const;
+export type SocialProvider = (typeof SOCIAL_PROVIDERS)[number];
+
+export const SOCIAL_PROVIDER_OPTIONS: { value: SocialProvider; label: string }[] = [
+  { value: 'google', label: 'Google' },
+  { value: 'facebook', label: 'Facebook' },
+  { value: 'apple', label: 'Apple' },
+];
+
+/** Label of a choice, for showing a saved value in a table. */
+export function getOptionLabel<T extends string>(options: { value: T; label: string }[], value: T | undefined): string {
+  return options.find((option) => option.value === value)?.label ?? '';
+}
+===== END FILE: src/features/users/constants.ts =====
+
+===== FILE: src/features/users/types.ts =====
+import type { AddressType, MaritalStatus, SocialProvider, TaskState, TaskType } from '@/features/users/constants';
+import type { Order } from '@/features/orders/types';
+
+export type UserId = string;
+
+export type User = {
+  id: UserId;
+  name: string;
+  email: string;
+  phone: string;
+  /** Dates are ISO text such as "2026-09-02T16:03:00+05:30". */
+  createdAt: string;
+  lastSignInAt: string;
+  /** Missing when the user never placed an order. */
+  lastOrderAt?: string;
+  ordersCreated: number;
+  successfulOrders: number;
+  /** When true the user can't sign in with an OTP. */
+  otpLoginLocked: boolean;
+  /** When true the user must update the app before using it again. */
+  forceUpdate: boolean;
+};
+
+export type UserAddress = {
+  /** Rows added on the Edit user page get a temporary id until they are saved. */
+  id: string;
+  line1: string;
+  line2?: string;
+  area?: string;
+  city: string;
+  state: string;
+  type?: AddressType;
+};
+
+export type SocialIdentity = {
+  id: string;
+  provider: SocialProvider;
+  referenceId: string;
+  /** Last characters of the access token. The server never sends the whole token back. */
+  tokenHint?: string;
+  /** Extra data kept by the server, as text. Shown only, never edited here. */
+  otherData?: string;
+};
+
+/** The whole user as the Edit user page shows it. */
+export type UserProfile = User & {
+  /** Short readable id, for example "202509020001". Can't be changed. */
+  friendlyId: string;
+  merchantNote?: string;
+  profession?: string;
+  maritalStatus?: MaritalStatus;
+  /** Dates are "2026-12-25". */
+  birthday?: string;
+  anniversary?: string;
+  membershipType?: string;
+  catalogType?: string;
+  brandName?: string;
+  companyName?: string;
+  addresses: UserAddress[];
+  socialIdentities: SocialIdentity[];
+};
+
+export type ReferralCoupon = {
+  id: string;
+  code: string;
+  /** For example "₹100" or "10%". */
+  value: string;
+  startTime: string;
+  endTime: string;
+};
+
+export type ReferralInfo = {
+  referralCoupons: ReferralCoupon[];
+  bonusReferralCoupons: ReferralCoupon[];
+};
+
+export type WalletTransaction = {
+  id: string;
+  /** For example "Order payment" or "Cashback". */
+  transactionType: string;
+  /** Positive when money was added, negative when it was spent. */
+  amount: number;
+  remainingBalance: number;
+  time: string;
+  target: string;
+  actor: string;
+  owner: string;
+};
+
+/** One page of wallet transactions, newest first. */
+export type WalletTransactionsPage = {
+  transactions: WalletTransaction[];
+  hasOlder: boolean;
+};
+
+/** The orders of one user, as the View Orders page lists them. */
+export type UserOrder = Order;
+
+/** One page of the users list, as the server sends it. */
+export type UsersPage = {
+  users: User[];
+  /** How many users match the search in total (not only on this page). */
+  total: number;
+  /** The next page number, or missing when this was the last page. */
+  nextPage?: number;
+};
+
+export type NonServiceableUser = {
+  id: string;
+  phone: string;
+  state: string;
+  city: string;
+  pincode: string;
+  createdAt: string;
+};
+
+export type UserTaskId = string;
+
+export type UserTask = {
+  id: UserTaskId;
+  type: TaskType;
+  state: TaskState;
+  notificationEmail: string;
+  createdAt: string;
+  /** True when there is a CSV file to download (the uploaded file for an import, the result for an export). */
+  hasFile: boolean;
+  errorMessage?: string;
+  /** The row of the CSV file that caused the error. */
+  errorRow?: string;
+};
+
+export type ForceUpdateResult = {
+  updatedCount: number;
+  /** Phone numbers that have no user account. */
+  unknownPhones: string[];
+};
+===== END FILE: src/features/users/types.ts =====
+
+===== FILE: src/features/users/schemas/user.schema.ts =====
+import { z } from 'zod';
+import { USER_SEARCH_FIELDS } from '@/features/users/constants';
+import { optionalText } from '@/lib/zod-fields';
+
+/** An email address: trimmed, lower case and checked. Shared by the edit profile form and the new task form. */
+export const emailField = z
+  .string({ error: 'Enter the email address' })
+  .trim()
+  .toLowerCase()
+  .min(1, 'Enter the email address')
+  .max(254, 'Use 254 characters or fewer')
+  .pipe(z.email('Enter a valid email address'));
+
+/** The search box on the Manage Users page. An empty search lists everyone. */
+export const userSearchSchema = z
+  .object({
+    field: z.enum(USER_SEARCH_FIELDS, { error: 'Choose what to search by' }),
+    term: optionalText(100),
+  })
+  .superRefine((search, ctx) => {
+    if (search.field === 'phone' && search.term && !/^\d{1,15}$/.test(search.term)) {
+      ctx.addIssue({ code: 'custom', path: ['term'], message: 'Use digits only for a phone number' });
+    }
+  });
+
+export type UserSearchInput = z.input<typeof userSearchSchema>;
+export type UserSearch = z.output<typeof userSearchSchema>;
+===== END FILE: src/features/users/schemas/user.schema.ts =====
+
+===== FILE: src/features/users/schemas/profile.schema.ts =====
+import { z } from 'zod';
+import { MARITAL_STATUSES, type SocialProvider } from '@/features/users/constants';
+import { emailField } from '@/features/users/schemas/user.schema';
+import type { UserAddress } from '@/features/users/types';
+import { optionalPastDate, optionalText, requiredText } from '@/lib/zod-fields';
+
+/**
+ * Edit user profile form rules. The phone number and friendly id are not part of it: the phone number is how
+ * the user signs in, and the friendly id never changes. Addresses and social identities have their own forms.
+ */
+export const profileFields = z.object({
+  name: requiredText('Enter the name', 100),
+  email: emailField,
+  merchantNote: optionalText(500),
+  profession: optionalText(80),
+  maritalStatus: z
+    .enum(MARITAL_STATUSES, { error: 'Choose one of the options' })
+    .nullish()
+    .transform((value) => value ?? undefined),
+  birthday: optionalPastDate(),
+  anniversary: optionalPastDate(),
+  membershipType: optionalText(60),
+  catalogType: optionalText(60),
+  brandName: optionalText(100),
+  companyName: optionalText(100),
+});
+
+export type ProfileFormInput = z.input<typeof profileFields>;
+export type ProfilePayload = z.output<typeof profileFields>;
+
+/** A social identity as it is sent when the profile is saved. The access token is only sent when it was typed. */
+export type SocialIdentityDraft = {
+  id: string;
+  provider: SocialProvider;
+  referenceId: string;
+  accessToken?: string;
+};
+
+/** Everything sent when the Edit user page is saved. */
+export type UserProfilePayload = ProfilePayload & {
+  addresses: UserAddress[];
+  socialIdentities: SocialIdentityDraft[];
+};
+===== END FILE: src/features/users/schemas/profile.schema.ts =====
+
+===== FILE: src/features/users/schemas/address.schema.ts =====
+import { z } from 'zod';
+import { ADDRESS_TYPES } from '@/features/users/constants';
+import { optionalText, requiredText } from '@/lib/zod-fields';
+
+/** The New address / Edit address form. */
+export const addressSchema = z.object({
+  line1: requiredText('Enter address line 1', 150),
+  line2: optionalText(150),
+  area: optionalText(100),
+  city: requiredText('Enter the city', 80),
+  state: requiredText('Enter the state', 80),
+  type: z
+    .enum(ADDRESS_TYPES, { error: 'Choose one of the options' })
+    .nullish()
+    .transform((value) => value ?? undefined),
+});
+
+export type AddressFormInput = z.input<typeof addressSchema>;
+export type AddressPayload = z.output<typeof addressSchema>;
+===== END FILE: src/features/users/schemas/address.schema.ts =====
+
+===== FILE: src/features/users/schemas/social-identity.schema.ts =====
+import { z } from 'zod';
+import { SOCIAL_PROVIDERS, type SocialProvider } from '@/features/users/constants';
+import { optionalText, requiredText } from '@/lib/zod-fields';
+
+/**
+ * The New social identity / Edit social identity form.
+ * The access token is a secret: the server never sends it back, so when an identity is edited the box starts
+ * empty and an empty box keeps the saved token. A new identity must have one.
+ */
+export function getSocialIdentitySchema(requireToken: boolean) {
+  return z.object({
+    provider: z.enum(SOCIAL_PROVIDERS, { error: 'Choose the provider' }),
+    referenceId: requiredText('Enter the reference', 200),
+    accessToken: requireToken ? requiredText('Enter the access token', 4000) : optionalText(4000),
+  });
+}
+
+export type SocialIdentityFormInput = {
+  provider?: SocialProvider;
+  referenceId?: string;
+  accessToken?: string;
+};
+
+export type SocialIdentityPayload = {
+  provider: SocialProvider;
+  referenceId: string;
+  accessToken?: string;
+};
+===== END FILE: src/features/users/schemas/social-identity.schema.ts =====
+
+===== FILE: src/features/users/api/mock-users.ts =====
+import dayjs from 'dayjs';
+import type {
+  NonServiceableUser,
+  ReferralInfo,
+  SocialIdentity,
+  User,
+  UserAddress,
+  UserId,
+  UserTask,
+  WalletTransaction,
+} from '@/features/users/types';
+
+/**
+ * SAMPLE DATA: used until the users API is connected.
+ * Replace the functions in `users-api.ts`, `non-serviceable-api.ts` and `tasks-api.ts` with real calls,
+ * then delete this file.
+ */
+
+const FAKE_NETWORK_DELAY_MS = 400;
+
+/** Waits a little, like a real request would. */
+export function fakeNetworkDelay(): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, FAKE_NETWORK_DELAY_MS));
+}
+
+// ---------- Users ----------
+
+const NAMES = ['Guest', 'Guest', 'Guest', 'Rakesh test', 'Test Karan', 'Anita Verma', 'Rohit Sharma', 'Priya Nair'];
+
+function buildUser(index: number): User {
+  const name = NAMES.at(index % NAMES.length) ?? 'Guest';
+  const phone = String(6_300_000_000 + index * 7_919);
+  const createdAt = dayjs('2025-09-02T10:00:00+05:30').add(index * 11, 'hour');
+  const lastSignInAt = createdAt.add((index % 9) * 20, 'hour');
+  const hasOrders = name !== 'Guest';
+  const ordersCreated = hasOrders ? 5 + ((index * 13) % 120) : 0;
+
+  return {
+    id: `usr-${String(index + 1).padStart(4, '0')}`,
+    name,
+    email: hasOrders ? `${name.toLowerCase().replace(/[^a-z]/g, '')}${index}@example.com` : `${phone}@abis.com`,
+    phone,
+    createdAt: createdAt.toISOString(),
+    lastSignInAt: lastSignInAt.toISOString(),
+    lastOrderAt: hasOrders ? lastSignInAt.subtract(3, 'day').toISOString() : undefined,
+    ordersCreated,
+    successfulOrders: Math.floor(ordersCreated * 0.6),
+    // A few users have OTP login locked or force update on, so both states can be tried.
+    otpLoginLocked: index % 17 === 3,
+    forceUpdate: index % 11 === 0,
+  };
+}
+
+/** 240 sample users, newest first. */
+export const mockUsers: User[] = Array.from({ length: 240 }, (_, index) => buildUser(index)).reverse();
+
+// ---------- Profile details (addresses, social identities, referral, wallet) ----------
+
+/** The parts of a user's profile that the users list does not carry. Created the first time a profile is opened. */
+export type MockProfileExtras = {
+  friendlyId: string;
+  merchantNote?: string;
+  profession?: string;
+  addresses: UserAddress[];
+  socialIdentities: SocialIdentity[];
+};
+
+const ADDRESS_SAMPLES: Omit<UserAddress, 'id'>[] = [
+  { line1: 'flat 18', area: 'area 17', city: 'Nehru Nagar', state: 'Chhattisgarh' },
+  { line1: 'Shankar Nagar', city: 'Raipur', state: 'Chhattisgarh', type: 'home' },
+  { line1: 'Link Road', line2: 'Near MSCB Station', area: 'Sadar', city: 'Nagpur', state: 'Maharashtra', type: 'work' },
+  { line1: 'Ginger Mall', line2: 'Main Bazaar Road', area: 'Jaripatka', city: 'Nagpur', state: 'Maharashtra' },
+];
+
+export const mockProfileExtras = new Map<UserId, MockProfileExtras>();
+
+/** The saved extras of a user. Users who ordered get addresses, and every third one a Google sign in. */
+export function getProfileExtras(user: User): MockProfileExtras {
+  const existing = mockProfileExtras.get(user.id);
+  if (existing) return existing;
+
+  const index = Number(user.id.replace(/\D/g, ''));
+  const addressCount = user.ordersCreated > 0 ? 1 + (index % 3) : 0;
+  const created: MockProfileExtras = {
+    friendlyId: `${dayjs(user.createdAt).format('YYYYMMDD')}${String(index).padStart(4, '0')}`,
+    addresses: ADDRESS_SAMPLES.slice(0, addressCount).map((address, position) => ({
+      ...address,
+      id: `${user.id}-addr-${position + 1}`,
+    })),
+    socialIdentities:
+      index % 3 === 0
+        ? [
+            {
+              id: `${user.id}-social-1`,
+              provider: 'google',
+              referenceId: `10987${index}2345`,
+              tokenHint: 'x9Qa',
+              otherData: '{"locale":"en"}',
+            },
+          ]
+        : [],
+  };
+  mockProfileExtras.set(user.id, created);
+  return created;
+}
+
+export function getMockReferralInfo(user: User): ReferralInfo {
+  const index = Number(user.id.replace(/\D/g, ''));
+  if (user.ordersCreated === 0) return { referralCoupons: [], bonusReferralCoupons: [] };
+  const start = dayjs('2026-09-01T00:00:00+05:30').add(index, 'day');
+  return {
+    referralCoupons: [
+      {
+        id: `${user.id}-ref-1`,
+        code: `REF${String(index).padStart(4, '0')}ABIS`,
+        value: '₹100',
+        startTime: start.toISOString(),
+        endTime: start.add(60, 'day').toISOString(),
+      },
+    ],
+    bonusReferralCoupons:
+      index % 2 === 0
+        ? [
+            {
+              id: `${user.id}-bonus-1`,
+              code: `BONUS${String(index).padStart(4, '0')}`,
+              value: '10%',
+              startTime: start.add(7, 'day').toISOString(),
+              endTime: start.add(37, 'day').toISOString(),
+            },
+          ]
+        : [],
+  };
+}
+
+const TRANSACTION_TYPES = ['Order payment', 'Cashback', 'Refund', 'Wallet top up', 'Protein points redeemed'];
+
+/** 37 sample transactions per user with orders, newest first. */
+export function getMockWalletTransactions(user: User): WalletTransaction[] {
+  if (user.ordersCreated === 0) return [];
+  const index = Number(user.id.replace(/\D/g, ''));
+  const total = 37;
+  let balance = 250 + index * 3;
+  const oldestFirst = Array.from({ length: total }, (_, position) => {
+    const transactionType = TRANSACTION_TYPES.at((position + index) % TRANSACTION_TYPES.length) ?? 'Cashback';
+    const spends = transactionType === 'Order payment' || transactionType === 'Protein points redeemed';
+    const amount = (spends ? -1 : 1) * (20 + ((position * 37 + index) % 180));
+    balance = Math.max(0, balance + amount);
+    return {
+      id: `${user.id}-wt-${String(position + 1).padStart(3, '0')}`,
+      transactionType,
+      amount,
+      remainingBalance: balance,
+      time: dayjs('2026-09-10T11:00:00+05:30')
+        .add(position * 19, 'hour')
+        .toISOString(),
+      target: spends ? `ORD-${100_000 + position * 7}` : 'Wallet',
+      actor: spends ? user.phone : 'admin@example.com',
+      owner: user.phone,
+    };
+  });
+  return oldestFirst.reverse();
+}
+
+// ---------- Non serviceable users ----------
+
+const PLACES = [
+  { state: 'Chhattisgarh', city: 'Rajnandgaon', pincode: '491441' },
+  { state: 'Maharashtra', city: 'Nagpur', pincode: '441001' },
+  { state: 'Maharashtra', city: 'Nagpur', pincode: '440003' },
+  { state: 'Karnataka', city: 'Tumakuru', pincode: '572104' },
+  { state: 'Tamil Nadu', city: 'Chennai', pincode: '600031' },
+  { state: 'Unknown', city: 'Unknown', pincode: '000000' },
+];
+
+export const mockNonServiceableUsers: NonServiceableUser[] = Array.from({ length: 48 }, (_, index) => {
+  const place = PLACES.at(index % PLACES.length) ?? PLACES[0];
+  return {
+    id: `nsu-${String(index + 1).padStart(3, '0')}`,
+    phone: String(6_500_000_000 + index * 48_271),
+    state: place?.state ?? 'Unknown',
+    city: place?.city ?? 'Unknown',
+    pincode: place?.pincode ?? '000000',
+    createdAt: dayjs('2026-08-14T17:01:00+05:30')
+      .add(index * 9, 'hour')
+      .toISOString(),
+  };
+});
+
+// ---------- Import / export tasks ----------
+
+function buildTask(index: number): UserTask {
+  const base = {
+    id: `tsk-${String(index + 1).padStart(3, '0')}`,
+    type: 'export' as const,
+    state: 'COMPLETED' as const,
+    notificationEmail: 'akshat.mishra@ibgroup.co.in',
+    createdAt: dayjs('2026-11-18T08:38:07+05:30')
+      .subtract(index * 19, 'day')
+      .toISOString(),
+    hasFile: true,
+  };
+
+  if (index === 3) {
+    return {
+      ...base,
+      type: 'import',
+      state: 'FAILED',
+      errorMessage: 'The phone number is not valid.',
+      errorRow: '3,Asha Rao,asha.rao@example.com,98765',
+    };
+  }
+  return base;
+}
+
+/** 36 sample tasks, newest first. */
+export const mockTasks: UserTask[] = Array.from({ length: 36 }, (_, index) => buildTask(index));
+===== END FILE: src/features/users/api/mock-users.ts =====
+
+===== FILE: src/features/users/api/query-keys.ts =====
+import type { UserSearch } from '@/features/users/schemas/user.schema';
+import type { UserId, UserTaskId } from '@/features/users/types';
+
+/**
+ * Names of the cached server data. Used when loading data and when refreshing it after a change,
+ * so a typo in one place can't leave a list out of date.
+ */
+export const userQueryKeys = {
+  /** Every users list (one per search). Refreshing this refreshes all of them. */
+  lists: ['users', 'list'] as const,
+  list: (search: UserSearch) => ['users', 'list', search] as const,
+  profile: (userId: UserId) => ['users', 'profile', userId] as const,
+  referral: (userId: UserId) => ['users', 'referral', userId] as const,
+  wallet: (userId: UserId, page: number) => ['users', 'wallet', userId, page] as const,
+  orders: (userId: UserId) => ['users', 'orders', userId] as const,
+  nonServiceable: (city: string) => ['users', 'non-serviceable', city] as const,
+  /** The task list and every task's details. */
+  tasks: ['users', 'tasks'] as const,
+  task: (taskId: UserTaskId) => ['users', 'tasks', taskId] as const,
+};
+===== END FILE: src/features/users/api/query-keys.ts =====
+
+===== FILE: src/features/users/api/users-cache.ts =====
+import type { InfiniteData, QueryClient } from '@tanstack/react-query';
+import { userQueryKeys } from '@/features/users/api/query-keys';
+import type { User, UsersPage } from '@/features/users/types';
+
+/**
+ * Puts a changed user into every loaded users list, so one row updates at once without loading
+ * the list again (which would also bring the scroll position back to the start).
+ */
+export function replaceUserInLists(queryClient: QueryClient, user: User): void {
+  queryClient.setQueriesData<InfiniteData<UsersPage>>({ queryKey: userQueryKeys.lists }, (data) =>
+    data
+      ? {
+          ...data,
+          pages: data.pages.map((page) => ({
+            ...page,
+            users: page.users.map((existing) => (existing.id === user.id ? user : existing)),
+          })),
+        }
+      : data,
+  );
+}
+===== END FILE: src/features/users/api/users-cache.ts =====
+
+===== FILE: src/features/users/api/users-api.ts =====
+import { fakeNetworkDelay, getProfileExtras, mockProfileExtras, mockUsers } from '@/features/users/api/mock-users';
+import type { UserProfilePayload } from '@/features/users/schemas/profile.schema';
+import type { ForceUpdatePayload } from '@/features/users/schemas/force-update.schema';
+import type { UserSearch } from '@/features/users/schemas/user.schema';
+import type { ForceUpdateResult, User, UserId, UserProfile, UsersPage } from '@/features/users/types';
+
+/**
+ * SAMPLE: these functions work on the sample data in `mock-users.ts` so the whole flow
+ * can be tried. Each one has a TODO showing the real call. When the API is ready, only the
+ * `api` files change: the pages keep working as they are.
+ */
+
+/** How many users one page holds. The real server decides this. */
+const PAGE_SIZE = 50;
+
+function getSearchValue(user: User, field: UserSearch['field']): string {
+  switch (field) {
+    case 'email':
+      return user.email;
+    case 'phone':
+      return user.phone;
+    case 'name':
+      return user.name;
+  }
+}
+
+export type ListUsersInput = {
+  search: UserSearch;
+  /** Starts at 0. */
+  page: number;
+};
+
+/**
+ * One page of users that match the search. The list asks for the next page when the person scrolls down.
+ * The server must do the searching and the paging: a user list can be very long.
+ *
+ * TODO: const { data } = await apiClient.get<UsersPage>('/users', {
+ *         params: { searchBy: search.field, q: search.term, page },
+ *       });
+ *       return data;
+ */
+export async function listUsersPage({ search, page }: ListUsersInput): Promise<UsersPage> {
+  await fakeNetworkDelay();
+  const term = search.term?.toLowerCase();
+  const matches = term
+    ? mockUsers.filter((user) => getSearchValue(user, search.field).toLowerCase().includes(term))
+    : mockUsers;
+
+  const start = page * PAGE_SIZE;
+  return {
+    users: structuredClone(matches.slice(start, start + PAGE_SIZE)),
+    total: matches.length,
+    nextPage: start + PAGE_SIZE < matches.length ? page + 1 : undefined,
+  };
+}
+
+function findUserIndex(userId: UserId): number {
+  const index = mockUsers.findIndex((user) => user.id === userId);
+  if (index < 0) throw new Error('User not found');
+  return index;
+}
+
+function requireUser(userId: UserId): User {
+  const user = mockUsers.at(findUserIndex(userId));
+  if (!user) throw new Error('User not found');
+  return user;
+}
+
+function toProfile(user: User): UserProfile {
+  const { addresses, socialIdentities, ...extras } = getProfileExtras(user);
+  return structuredClone({ ...user, ...extras, addresses, socialIdentities });
+}
+
+/**
+ * The whole profile of one user: details, addresses and social identities.
+ * The server must never send access tokens, only the last characters of each (`tokenHint`).
+ *
+ * TODO: const { data } = await apiClient.get<UserProfile>(`/users/${encodeURIComponent(userId)}/profile`);
+ *       return data;
+ * (encodeURIComponent keeps a strange id from changing the request path.)
+ */
+export async function getUserProfile(userId: UserId): Promise<UserProfile> {
+  await fakeNetworkDelay();
+  return toProfile(requireUser(userId));
+}
+
+export type UpdateUserProfileInput = {
+  userId: UserId;
+  payload: UserProfilePayload;
+};
+
+/**
+ * Saves the profile with its full list of addresses and social identities, so rows that were deleted on the
+ * page are removed. The server must refuse an email that another user already has, and must keep the saved
+ * access token of a social identity when `accessToken` is missing.
+ *
+ * TODO: const { data } = await apiClient.put<UserProfile>(`/users/${encodeURIComponent(userId)}/profile`, payload);
+ *       return data;
+ */
+export async function updateUserProfile({ userId, payload }: UpdateUserProfileInput): Promise<UserProfile> {
+  await fakeNetworkDelay();
+  const index = findUserIndex(userId);
+  const existing = requireUser(userId);
+
+  if (mockUsers.some((user) => user.email === payload.email && user.id !== userId)) {
+    throw new Error('Another user already has this email');
+  }
+
+  const { addresses, socialIdentities, name, email, ...details } = payload;
+  const saved: User = { ...existing, name, email };
+  mockUsers.splice(index, 1, saved);
+
+  const extras = getProfileExtras(existing);
+  mockProfileExtras.set(userId, {
+    ...extras,
+    ...details,
+    addresses: structuredClone(addresses),
+    socialIdentities: socialIdentities.map((identity) => {
+      const previous = extras.socialIdentities.find((row) => row.id === identity.id);
+      const hint = identity.accessToken ? identity.accessToken.slice(-4) : previous?.tokenHint;
+      return {
+        id: identity.id,
+        provider: identity.provider,
+        referenceId: identity.referenceId,
+        tokenHint: hint,
+        otherData: previous?.otherData,
+      };
+    }),
+  });
+  return toProfile(saved);
+}
+
+export type SetOtpLoginLockInput = {
+  userId: UserId;
+  locked: boolean;
+};
+
+/**
+ * Locks or unlocks OTP sign in for one user. The page shows the new state from the answer, not from the click.
+ * The server must allow this to admins only.
+ *
+ * TODO: const { data } = await apiClient.put<User>(`/users/${encodeURIComponent(userId)}/otp-lock`, { locked });
+ *       return data;
+ */
+export async function setOtpLoginLock({ userId, locked }: SetOtpLoginLockInput): Promise<User> {
+  await fakeNetworkDelay();
+  const index = findUserIndex(userId);
+  const saved: User = { ...requireUser(userId), otpLoginLocked: locked };
+  mockUsers.splice(index, 1, saved);
+  return structuredClone(saved);
+}
+
+export type SetUserForceUpdateInput = {
+  userId: UserId;
+  enabled: boolean;
+};
+
+/**
+ * Turns force update on or off for one user (the red/green button in the list).
+ *
+ * TODO: const { data } = await apiClient.put<User>(`/users/${encodeURIComponent(userId)}/force-update`, { enabled });
+ *       return data;
+ */
+export async function setUserForceUpdate({ userId, enabled }: SetUserForceUpdateInput): Promise<User> {
+  await fakeNetworkDelay();
+  const index = findUserIndex(userId);
+  const saved: User = { ...requireUser(userId), forceUpdate: enabled };
+  mockUsers.splice(index, 1, saved);
+  return structuredClone(saved);
+}
+
+/**
+ * Turns "force update" on or off for some phone numbers, or for every user. Users with force update on
+ * must update the app before they can use it again, so the server must allow this to admins only.
+ *
+ * TODO: const { data } = await apiClient.post<ForceUpdateResult>('/users/force-update', payload);
+ *       return data;
+ */
+export async function setForceUpdate(payload: ForceUpdatePayload): Promise<ForceUpdateResult> {
+  await fakeNetworkDelay();
+  if (payload.applyToAll) {
+    mockUsers.forEach((user, index) => mockUsers.splice(index, 1, { ...user, forceUpdate: payload.enabled }));
+    return { updatedCount: mockUsers.length, unknownPhones: [] };
+  }
+
+  const known = new Set(mockUsers.map((user) => user.phone));
+  const unknownPhones = payload.phoneNumbers.filter((phone) => !known.has(phone));
+  mockUsers.forEach((user, index) => {
+    if (payload.phoneNumbers.includes(user.phone))
+      mockUsers.splice(index, 1, { ...user, forceUpdate: payload.enabled });
+  });
+  return { updatedCount: payload.phoneNumbers.length - unknownPhones.length, unknownPhones };
+}
+===== END FILE: src/features/users/api/users-api.ts =====
+
+===== FILE: src/features/users/api/user-activity-api.ts =====
+import {
+  fakeNetworkDelay,
+  getMockReferralInfo,
+  getMockWalletTransactions,
+  mockUsers,
+} from '@/features/users/api/mock-users';
+import { mockOrders } from '@/features/orders/api/mock-orders';
+import type { ReferralInfo, UserId, UserOrder, WalletTransactionsPage } from '@/features/users/types';
+
+/**
+ * SAMPLE: what a user did: referral coupons, wallet transactions and orders. Works on the sample data in
+ * `mock-users.ts`. Each function has a TODO showing the real call. The server must check that the person
+ * asking is an admin who may see this user's data.
+ */
+
+/** Wallet transactions shown at once. */
+export const WALLET_PAGE_SIZE = 10;
+
+function requireUser(userId: UserId) {
+  const user = mockUsers.find((candidate) => candidate.id === userId);
+  if (!user) throw new Error('User not found');
+  return user;
+}
+
+/**
+ * The referral coupons and bonus referral coupons of one user.
+ *
+ * TODO: const { data } = await apiClient.get<ReferralInfo>(`/users/${encodeURIComponent(userId)}/referral`);
+ *       return data;
+ */
+export async function getReferralInfo(userId: UserId): Promise<ReferralInfo> {
+  await fakeNetworkDelay();
+  return structuredClone(getMockReferralInfo(requireUser(userId)));
+}
+
+export type ListWalletTransactionsInput = {
+  userId: UserId;
+  /** 0 is the newest transactions, 1 the ones before them, and so on. */
+  page: number;
+};
+
+/**
+ * One page of the wallet transactions of a user, newest first. "Older" asks for the next page, "Newer" for the previous one.
+ *
+ * TODO: const { data } = await apiClient.get<WalletTransactionsPage>(
+ *         `/users/${encodeURIComponent(userId)}/wallet-transactions`,
+ *         { params: { page, pageSize: WALLET_PAGE_SIZE } },
+ *       );
+ *       return data;
+ */
+export async function listWalletTransactions({
+  userId,
+  page,
+}: ListWalletTransactionsInput): Promise<WalletTransactionsPage> {
+  await fakeNetworkDelay();
+  const all = getMockWalletTransactions(requireUser(userId));
+  const start = page * WALLET_PAGE_SIZE;
+  return {
+    transactions: structuredClone(all.slice(start, start + WALLET_PAGE_SIZE)),
+    hasOlder: start + WALLET_PAGE_SIZE < all.length,
+  };
+}
+
+/**
+ * The orders of one user, newest first. If a user can have thousands of orders, load them in pages
+ * (like the users list) instead.
+ *
+ * TODO: const { data } = await apiClient.get<UserOrder[]>(`/users/${encodeURIComponent(userId)}/orders`);
+ *       return data;
+ */
+export async function listUserOrders(userId: UserId): Promise<UserOrder[]> {
+  await fakeNetworkDelay();
+  const user = requireUser(userId);
+  const index = Number(user.id.replace(/\D/g, ''));
+  const count = user.ordersCreated === 0 ? 0 : 3 + (index % 12);
+  return mockOrders.slice(index % 10, (index % 10) + count).map((order) => ({
+    ...structuredClone(order),
+    customer: { name: user.name, phone: user.phone, email: user.email, isGuest: false },
+  }));
+}
+===== END FILE: src/features/users/api/user-activity-api.ts =====
+
+===== FILE: src/features/users/components/UserActionButtons.tsx =====
+import {
+  EditOutlined,
+  LockOutlined,
+  SyncOutlined,
+  TagsOutlined,
+  UnlockOutlined,
+  UnorderedListOutlined,
+  WalletOutlined,
+} from '@ant-design/icons';
+import { Button, Flex, Popconfirm, Tooltip } from 'antd';
+import type { User, UserId } from '@/features/users/types';
+import '@/features/users/users.css';
+
+export type UserActions = {
+  onEdit: (user: User) => void;
+  onViewReferral: (user: User) => void;
+  onViewOrders: (user: User) => void;
+  onViewWallet: (user: User) => void;
+  onToggleOtpLock: (user: User) => void;
+  onToggleForceUpdate: (user: User) => void;
+  /** The user whose OTP lock is being saved right now. Its button shows a spinner. */
+  lockingUserId?: UserId;
+  /** The user whose force update is being saved right now. */
+  forceUpdatingUserId?: UserId;
+};
+
+type UserActionButtonsProps = UserActions & {
+  user: User;
+};
+
+/**
+ * The six buttons at the end of a user row: edit, OTP login lock, referral information, orders, wallet
+ * transactions and force update. The lock and force update buttons show the saved state; it changes when the
+ * server has answered. Hiding a button is not security: the server must check who may do each of these.
+ */
+export function UserActionButtons({
+  user,
+  onEdit,
+  onViewReferral,
+  onViewOrders,
+  onViewWallet,
+  onToggleOtpLock,
+  onToggleForceUpdate,
+  lockingUserId,
+  forceUpdatingUserId,
+}: UserActionButtonsProps) {
+  const who = `${user.name} (${user.phone})`;
+  const locked = user.otpLoginLocked;
+  const forced = user.forceUpdate;
+
+  return (
+    <Flex align="center" gap={2} wrap={false}>
+      <Tooltip title="Edit user profile">
+        <Button
+          size="small"
+          type="text"
+          icon={<EditOutlined />}
+          aria-label={`Edit ${who}`}
+          onClick={() => onEdit(user)}
+        />
+      </Tooltip>
+
+      <Popconfirm
+        title={locked ? 'Unlock OTP login?' : 'Lock OTP login?'}
+        description={
+          locked
+            ? `${user.phone} will be able to sign in with an OTP again.`
+            : `${user.phone} will not be able to sign in with an OTP.`
+        }
+        okText={locked ? 'Unlock' : 'Lock'}
+        okButtonProps={{ danger: !locked }}
+        cancelText="Cancel"
+        placement="topRight"
+        onConfirm={() => onToggleOtpLock(user)}
+      >
+        <Tooltip title={locked ? 'OTP login is locked. Click to unlock' : 'OTP login is open. Click to lock'}>
+          <Button
+            size="small"
+            type="text"
+            icon={locked ? <LockOutlined /> : <UnlockOutlined />}
+            loading={lockingUserId === user.id}
+            className={locked ? 'users-toggle users-toggle--locked' : 'users-toggle'}
+            aria-label={`OTP login is ${locked ? 'locked' : 'open'} for ${who}`}
+          />
+        </Tooltip>
+      </Popconfirm>
+
+      <Tooltip title="Referral information">
+        <Button
+          size="small"
+          type="text"
+          icon={<TagsOutlined />}
+          aria-label={`Referral information of ${who}`}
+          onClick={() => onViewReferral(user)}
+        />
+      </Tooltip>
+      <Tooltip title="Orders">
+        <Button
+          size="small"
+          type="text"
+          icon={<UnorderedListOutlined />}
+          aria-label={`Orders of ${who}`}
+          onClick={() => onViewOrders(user)}
+        />
+      </Tooltip>
+      <Tooltip title="Wallet transactions">
+        <Button
+          size="small"
+          type="text"
+          icon={<WalletOutlined />}
+          aria-label={`Wallet transactions of ${who}`}
+          onClick={() => onViewWallet(user)}
+        />
+      </Tooltip>
+
+      <Popconfirm
+        title={forced ? 'Turn force update off?' : 'Turn force update on?'}
+        description={
+          forced
+            ? `${user.phone} no longer has to update the app.`
+            : `${user.phone} must update the app before using it again.`
+        }
+        okText={forced ? 'Turn off' : 'Turn on'}
+        cancelText="Cancel"
+        placement="topRight"
+        onConfirm={() => onToggleForceUpdate(user)}
+      >
+        <Tooltip
+          title={forced ? 'Force update is on. Click to turn it off' : 'Force update is off. Click to turn it on'}
+        >
+          <Button
+            size="small"
+            type="text"
+            icon={<SyncOutlined />}
+            loading={forceUpdatingUserId === user.id}
+            className={forced ? 'users-toggle users-toggle--on' : 'users-toggle users-toggle--off'}
+            aria-label={`Force update is ${forced ? 'on' : 'off'} for ${who}`}
+          />
+        </Tooltip>
+      </Popconfirm>
+    </Flex>
+  );
+}
+===== END FILE: src/features/users/components/UserActionButtons.tsx =====
+
+===== FILE: src/features/users/components/UsersTable.tsx =====
+import { Empty, Grid, Table, Typography, type TableColumnsType } from 'antd';
+import type { UIEvent } from 'react';
+import { DateTimeText } from '@/features/users/components/DateTimeText';
+import { UserActionButtons, type UserActions } from '@/features/users/components/UserActionButtons';
+import type { User } from '@/features/users/types';
+import { useTableBodyHeight } from '@/hooks/useTableBodyHeight';
+import { formatCount } from '@/utils/number-format';
+import '@/features/users/users.css';
+
+/** When the person is this close (in pixels) to the end of the list, the next page is loaded. */
+const LOAD_MORE_DISTANCE = 280;
+
+type UsersTableProps = UserActions & {
+  users: User[];
+  loading?: boolean;
+  /** Called when the person scrolls near the end of the list. */
+  onReachEnd: () => void;
+};
+
+function getColumns(actions: UserActions, isMobile: boolean): TableColumnsType<User> {
+  return [
+    {
+      title: 'Name',
+      dataIndex: 'name',
+      key: 'name',
+      width: 160,
+      render: (name: string) => <Typography.Text ellipsis={{ tooltip: name }}>{name}</Typography.Text>,
+    },
+    {
+      title: 'Email',
+      dataIndex: 'email',
+      key: 'email',
+      width: 260,
+      render: (email: string) => <Typography.Text ellipsis={{ tooltip: email }}>{email}</Typography.Text>,
+    },
+    {
+      title: 'Phone number',
+      dataIndex: 'phone',
+      key: 'phone',
+      width: 140,
+      render: (phone: string) => <span className="users-table__mono">{phone}</span>,
+    },
+    {
+      title: 'Created at',
+      dataIndex: 'createdAt',
+      key: 'createdAt',
+      width: 200,
+      render: (createdAt: string) => <DateTimeText value={createdAt} />,
+    },
+    {
+      title: 'Last sign in',
+      dataIndex: 'lastSignInAt',
+      key: 'lastSignInAt',
+      width: 200,
+      render: (lastSignInAt: string) => <DateTimeText value={lastSignInAt} />,
+    },
+    {
+      title: 'Last order',
+      dataIndex: 'lastOrderAt',
+      key: 'lastOrderAt',
+      width: 200,
+      render: (lastOrderAt: string | undefined) => <DateTimeText value={lastOrderAt} />,
+    },
+    {
+      title: 'Orders created',
+      dataIndex: 'ordersCreated',
+      key: 'ordersCreated',
+      width: 130,
+      align: 'right',
+      render: (count: number) => formatCount(count),
+    },
+    {
+      title: 'Successful orders',
+      dataIndex: 'successfulOrders',
+      key: 'successfulOrders',
+      width: 150,
+      align: 'right',
+      render: (count: number) => formatCount(count),
+    },
+    {
+      title: 'Actions',
+      key: 'actions',
+      width: 230,
+      fixed: isMobile ? undefined : 'right',
+      render: (_, user) => <UserActionButtons user={user} {...actions} />,
+    },
+  ];
+}
+
+/**
+ * The users list. Uses virtual scrolling instead of page buttons: the list grows as the person
+ * scrolls down (the next page is loaded near the end), and only the rows on screen are drawn.
+ */
+export function UsersTable({ users, loading = false, onReachEnd, ...actions }: UsersTableProps) {
+  const { tableRef, bodyHeight } = useTableBodyHeight();
+  // On a phone the Actions column scrolls with the table: pinned, it would cover the user's details.
+  const isMobile = !Grid.useBreakpoint().md;
+  const columns = getColumns(actions, isMobile);
+  const tableWidth = columns.reduce((sum, column) => sum + Number(column.width ?? 0), 0);
+
+  const handleScroll = (event: UIEvent<HTMLDivElement>) => {
+    const list = event.currentTarget;
+    if (list.scrollHeight - list.scrollTop - list.clientHeight < LOAD_MORE_DISTANCE) onReachEnd();
+  };
+
+  return (
+    <Table<User>
+      ref={tableRef}
+      className="list-table users-table"
+      virtual
+      rowKey="id"
+      columns={columns}
+      dataSource={users}
+      loading={loading}
+      pagination={false}
+      scroll={{ x: tableWidth, y: bodyHeight }}
+      onScroll={handleScroll}
+      locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No users found" /> }}
+    />
+  );
+}
+===== END FILE: src/features/users/components/UsersTable.tsx =====
+
+===== FILE: src/features/users/components/ReferralModal.tsx =====
+import { useQuery } from '@tanstack/react-query';
+import { Modal, Skeleton, Table, Typography, type TableColumnsType } from 'antd';
+import { LoadError } from '@/components/ui/LoadError';
+import { userQueryKeys } from '@/features/users/api/query-keys';
+import { getReferralInfo } from '@/features/users/api/user-activity-api';
+import { formatDateTime } from '@/features/users/format';
+import type { ReferralCoupon, User } from '@/features/users/types';
+import '@/features/users/users.css';
+
+const columns: TableColumnsType<ReferralCoupon> = [
+  {
+    title: 'Code',
+    dataIndex: 'code',
+    key: 'code',
+    render: (code: string) => <span className="users-table__mono">{code}</span>,
+  },
+  { title: 'Value', dataIndex: 'value', key: 'value' },
+  { title: 'Start time', dataIndex: 'startTime', key: 'startTime', render: (time: string) => formatDateTime(time) },
+  { title: 'End time', dataIndex: 'endTime', key: 'endTime', render: (time: string) => formatDateTime(time) },
+];
+
+type CouponTableProps = {
+  title: string;
+  coupons: ReferralCoupon[];
+};
+
+function CouponTable({ title, coupons }: CouponTableProps) {
+  return (
+    <section className="users-modal-section">
+      <Typography.Title level={5}>{title}</Typography.Title>
+      <Table<ReferralCoupon>
+        size="small"
+        rowKey="id"
+        columns={columns}
+        dataSource={coupons}
+        pagination={false}
+        scroll={{ x: 560 }}
+        locale={{ emptyText: 'No coupons' }}
+      />
+    </section>
+  );
+}
+
+type ReferralModalProps = {
+  /** The user whose referral information is shown. The window is closed when missing. */
+  user?: User;
+  onClose: () => void;
+};
+
+/** The referral coupon and bonus referral coupon of one user. */
+export function ReferralModal({ user, onClose }: ReferralModalProps) {
+  const userId = user?.id ?? '';
+  const referralQuery = useQuery({
+    queryKey: userQueryKeys.referral(userId),
+    queryFn: () => getReferralInfo(userId),
+    enabled: user !== undefined,
+  });
+
+  return (
+    <Modal
+      open={user !== undefined}
+      title="Referral information"
+      footer={null}
+      width={720}
+      destroyOnHidden
+      onCancel={onClose}
+    >
+      {user && (
+        <Typography.Paragraph className="users-muted">
+          {user.name} · {user.phone}
+        </Typography.Paragraph>
+      )}
+      {referralQuery.isPending && <Skeleton active paragraph={{ rows: 4 }} />}
+      {referralQuery.isError && <LoadError what="referral information" onRetry={() => void referralQuery.refetch()} />}
+      {referralQuery.data && (
+        <>
+          <CouponTable title="Referral coupon" coupons={referralQuery.data.referralCoupons} />
+          <CouponTable title="Bonus referral coupon" coupons={referralQuery.data.bonusReferralCoupons} />
+        </>
+      )}
+    </Modal>
+  );
+}
+===== END FILE: src/features/users/components/ReferralModal.tsx =====
+
+===== FILE: src/features/users/components/WalletTransactionsModal.tsx =====
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { Button, Flex, Modal, Table, Typography, type TableColumnsType } from 'antd';
+import { useState } from 'react';
+import { LoadError } from '@/components/ui/LoadError';
+import { userQueryKeys } from '@/features/users/api/query-keys';
+import { listWalletTransactions } from '@/features/users/api/user-activity-api';
+import { formatDateTime } from '@/features/users/format';
+import type { User, WalletTransaction } from '@/features/users/types';
+import { formatCurrency } from '@/utils/number-format';
+import '@/features/users/users.css';
+
+/** "+₹120.00" when money was added, "-₹120.00" when it was spent. The sign is shown, so color is not needed. */
+function formatSignedAmount(amount: number): string {
+  return `${amount < 0 ? '-' : '+'}${formatCurrency(Math.abs(amount))}`;
+}
+
+const columns: TableColumnsType<WalletTransaction> = [
+  {
+    title: 'Id',
+    dataIndex: 'id',
+    key: 'id',
+    width: 150,
+    render: (id: string) => (
+      <Typography.Text className="users-table__mono" ellipsis={{ tooltip: id }}>
+        {id}
+      </Typography.Text>
+    ),
+  },
+  { title: 'Transaction type', dataIndex: 'transactionType', key: 'transactionType', width: 190 },
+  {
+    title: 'Amount',
+    dataIndex: 'amount',
+    key: 'amount',
+    width: 120,
+    align: 'right',
+    render: (amount: number) => formatSignedAmount(amount),
+  },
+  {
+    title: 'Remaining balance',
+    dataIndex: 'remainingBalance',
+    key: 'remainingBalance',
+    width: 160,
+    align: 'right',
+    render: (balance: number) => formatCurrency(balance),
+  },
+  { title: 'Time', dataIndex: 'time', key: 'time', width: 190, render: (time: string) => formatDateTime(time) },
+  { title: 'Target', dataIndex: 'target', key: 'target', width: 130 },
+  { title: 'Actor', dataIndex: 'actor', key: 'actor', width: 190 },
+  { title: 'Owner', dataIndex: 'owner', key: 'owner', width: 130 },
+];
+
+type WalletTransactionsModalProps = {
+  /** The user whose wallet is shown. The window is closed when missing. */
+  user?: User;
+  onClose: () => void;
+};
+
+/**
+ * The wallet transactions of one user, ten at a time, newest first.
+ * Give it `key={user?.id}` so it starts on the newest page every time it is opened.
+ */
+export function WalletTransactionsModal({ user, onClose }: WalletTransactionsModalProps) {
+  const [page, setPage] = useState(0);
+  const userId = user?.id ?? '';
+
+  const walletQuery = useQuery({
+    queryKey: userQueryKeys.wallet(userId, page),
+    queryFn: () => listWalletTransactions({ userId, page }),
+    enabled: user !== undefined,
+    // Keep showing the current page while the next one loads, so the window does not jump.
+    placeholderData: keepPreviousData,
+  });
+
+  return (
+    <Modal
+      open={user !== undefined}
+      title="User wallet transactions"
+      width={1100}
+      destroyOnHidden
+      onCancel={onClose}
+      footer={
+        <Flex justify="space-between">
+          <Button disabled={page === 0 || walletQuery.isFetching} onClick={() => setPage((current) => current - 1)}>
+            Newer transactions
+          </Button>
+          <Button
+            type="primary"
+            disabled={!walletQuery.data?.hasOlder || walletQuery.isFetching}
+            onClick={() => setPage((current) => current + 1)}
+          >
+            Older transactions
+          </Button>
+        </Flex>
+      }
+    >
+      {user && (
+        <Typography.Paragraph className="users-muted">
+          {user.name} · {user.phone}
+        </Typography.Paragraph>
+      )}
+      {walletQuery.isError ? (
+        <LoadError what="wallet transactions" onRetry={() => void walletQuery.refetch()} />
+      ) : (
+        <Table<WalletTransaction>
+          size="small"
+          rowKey="id"
+          columns={columns}
+          dataSource={walletQuery.data?.transactions}
+          loading={walletQuery.isFetching}
+          pagination={false}
+          scroll={{ x: 1060 }}
+          locale={{ emptyText: 'No transactions' }}
+        />
+      )}
+    </Modal>
+  );
+}
+===== END FILE: src/features/users/components/WalletTransactionsModal.tsx =====
+
+===== FILE: src/features/users/components/AddressFormDrawer.tsx =====
+import { Button, Col, Form, Input, Row, Select } from 'antd';
+import { FormDrawer } from '@/components/ui/FormDrawer';
+import { FormActions } from '@/components/ui/PageLayout';
+import { ADDRESS_TYPE_OPTIONS } from '@/features/users/constants';
+import { addressSchema, type AddressFormInput, type AddressPayload } from '@/features/users/schemas/address.schema';
+import type { UserAddress } from '@/features/users/types';
+import { showZodErrorsInForm, zodRule } from '@/lib/zod-form';
+
+const fields = addressSchema.shape;
+
+type AddressFormProps = {
+  address?: UserAddress;
+  onSubmit: (payload: AddressPayload) => void;
+  onClose: () => void;
+};
+
+function AddressForm({ address, onSubmit, onClose }: AddressFormProps) {
+  const [form] = Form.useForm<AddressFormInput>();
+
+  const handleFinish = (values: AddressFormInput) => {
+    const result = addressSchema.safeParse(values);
+    if (!result.success) {
+      showZodErrorsInForm(form, result.error);
+      return;
+    }
+    onSubmit(result.data);
+  };
+
+  return (
+    <Form<AddressFormInput>
+      form={form}
+      layout="vertical"
+      initialValues={address}
+      onFinish={handleFinish}
+      scrollToFirstError={{ behavior: 'smooth', block: 'center' }}
+    >
+      <Form.Item label="Line 1" name="line1" required rules={[zodRule(fields.line1)]}>
+        <Input maxLength={150} />
+      </Form.Item>
+      <Form.Item label="Line 2" name="line2" rules={[zodRule(fields.line2)]}>
+        <Input maxLength={150} />
+      </Form.Item>
+      <Form.Item label="Area" name="area" rules={[zodRule(fields.area)]}>
+        <Input maxLength={100} />
+      </Form.Item>
+      <Row gutter={16}>
+        <Col xs={24} sm={12}>
+          <Form.Item label="City" name="city" required rules={[zodRule(fields.city)]}>
+            <Input maxLength={80} />
+          </Form.Item>
+        </Col>
+        <Col xs={24} sm={12}>
+          <Form.Item label="State" name="state" required rules={[zodRule(fields.state)]}>
+            <Input maxLength={80} />
+          </Form.Item>
+        </Col>
+      </Row>
+      <Form.Item label="Type" name="type" rules={[zodRule(fields.type)]}>
+        <Select allowClear options={ADDRESS_TYPE_OPTIONS} placeholder="Select" />
+      </Form.Item>
+
+      <FormActions>
+        <Button onClick={onClose}>Cancel</Button>
+        <Button type="primary" htmlType="submit">
+          {address ? 'Save address' : 'Add address'}
+        </Button>
+      </FormActions>
+    </Form>
+  );
+}
+
+type AddressFormDrawerProps = {
+  open: boolean;
+  /** The address being edited. Missing when a new address is added. */
+  address?: UserAddress;
+  onSubmit: (payload: AddressPayload) => void;
+  onClose: () => void;
+};
+
+/** Slide-in form to add a new address, or to edit one with its saved values filled in. */
+export function AddressFormDrawer({ open, address, onSubmit, onClose }: AddressFormDrawerProps) {
+  return (
+    <FormDrawer title={address ? 'Edit address' : 'New address'} open={open} onClose={onClose} width={480}>
+      <AddressForm address={address} onSubmit={onSubmit} onClose={onClose} />
+    </FormDrawer>
+  );
+}
+===== END FILE: src/features/users/components/AddressFormDrawer.tsx =====
+
+===== FILE: src/features/users/components/AddressesSection.tsx =====
+import { PlusOutlined } from '@ant-design/icons';
+import { Button, Table, type TableColumnsType } from 'antd';
+import { useState } from 'react';
+import { FormSection } from '@/components/ui/PageLayout';
+import { RowActions } from '@/components/ui/RowActions';
+import { AddressFormDrawer } from '@/features/users/components/AddressFormDrawer';
+import { ADDRESS_TYPE_OPTIONS, getOptionLabel } from '@/features/users/constants';
+import type { AddressPayload } from '@/features/users/schemas/address.schema';
+import type { UserAddress } from '@/features/users/types';
+import '@/features/users/users.css';
+
+const EMPTY = <span className="users-muted">-</span>;
+
+type DrawerState = {
+  /** The address being edited. Missing when a new one is added. */
+  address?: UserAddress;
+};
+
+type AddressesSectionProps = {
+  addresses: UserAddress[];
+  onChange: (addresses: UserAddress[]) => void;
+};
+
+/**
+ * The addresses of the user: a table with Edit and Delete on each row, and Add address below it.
+ * The list is only changed on the page. It is saved when the person presses Update.
+ */
+export function AddressesSection({ addresses, onChange }: AddressesSectionProps) {
+  const [drawer, setDrawer] = useState<DrawerState>();
+
+  const columns: TableColumnsType<UserAddress> = [
+    { title: 'Line 1', dataIndex: 'line1', key: 'line1', width: 200 },
+    { title: 'Line 2', dataIndex: 'line2', key: 'line2', width: 170, render: (line2?: string) => line2 ?? EMPTY },
+    { title: 'Area', dataIndex: 'area', key: 'area', width: 140, render: (area?: string) => area ?? EMPTY },
+    { title: 'City', dataIndex: 'city', key: 'city', width: 140 },
+    { title: 'State', dataIndex: 'state', key: 'state', width: 150 },
+    {
+      title: 'Type',
+      dataIndex: 'type',
+      key: 'type',
+      width: 90,
+      render: (type: UserAddress['type']) => getOptionLabel(ADDRESS_TYPE_OPTIONS, type) || EMPTY,
+    },
+    {
+      title: 'Actions',
+      key: 'actions',
+      width: 110,
+      render: (_, address) => (
+        <RowActions
+          name={address.line1}
+          what="address"
+          deleteDescription={`"${address.line1}" is removed from the list. It is deleted when you press Update.`}
+          onEdit={() => setDrawer({ address })}
+          onDelete={() => onChange(addresses.filter((row) => row.id !== address.id))}
+        />
+      ),
+    },
+  ];
+
+  const handleSubmit = (payload: AddressPayload) => {
+    const editing = drawer?.address;
+    onChange(
+      editing
+        ? addresses.map((row) => (row.id === editing.id ? { ...row, ...payload } : row))
+        : [...addresses, { id: crypto.randomUUID(), ...payload }],
+    );
+    setDrawer(undefined);
+  };
+
+  return (
+    <FormSection title="Addresses" description="Delivery addresses of this user.">
+      <Table<UserAddress>
+        size="small"
+        rowKey="id"
+        columns={columns}
+        dataSource={addresses}
+        pagination={false}
+        scroll={{ x: 1000 }}
+        locale={{ emptyText: 'No addresses yet' }}
+      />
+      <Button className="users-list-add" icon={<PlusOutlined />} onClick={() => setDrawer({})}>
+        Add address
+      </Button>
+
+      <AddressFormDrawer
+        open={drawer !== undefined}
+        address={drawer?.address}
+        onSubmit={handleSubmit}
+        onClose={() => setDrawer(undefined)}
+      />
+    </FormSection>
+  );
+}
+===== END FILE: src/features/users/components/AddressesSection.tsx =====
+
+===== FILE: src/features/users/components/SocialIdentityFormDrawer.tsx =====
+import { Button, Form, Input, Select } from 'antd';
+import { FormDrawer } from '@/components/ui/FormDrawer';
+import { FormActions } from '@/components/ui/PageLayout';
+import { SOCIAL_PROVIDER_OPTIONS } from '@/features/users/constants';
+import {
+  getSocialIdentitySchema,
+  type SocialIdentityFormInput,
+  type SocialIdentityPayload,
+} from '@/features/users/schemas/social-identity.schema';
+import type { SocialIdentity } from '@/features/users/types';
+import { showZodErrorsInForm, zodRule } from '@/lib/zod-form';
+
+type SocialIdentityFormProps = {
+  identity?: SocialIdentity;
+  onSubmit: (payload: SocialIdentityPayload) => void;
+  onClose: () => void;
+};
+
+function SocialIdentityForm({ identity, onSubmit, onClose }: SocialIdentityFormProps) {
+  const [form] = Form.useForm<SocialIdentityFormInput>();
+  // A new identity needs a token. An edited one keeps its saved token when the box is left empty.
+  const schema = getSocialIdentitySchema(identity === undefined);
+  const fields = schema.shape;
+
+  const handleFinish = (values: SocialIdentityFormInput) => {
+    const result = schema.safeParse(values);
+    if (!result.success) {
+      showZodErrorsInForm(form, result.error);
+      return;
+    }
+    onSubmit(result.data);
+  };
+
+  return (
+    <Form<SocialIdentityFormInput>
+      form={form}
+      layout="vertical"
+      initialValues={identity ? { provider: identity.provider, referenceId: identity.referenceId } : undefined}
+      onFinish={handleFinish}
+      scrollToFirstError={{ behavior: 'smooth', block: 'center' }}
+    >
+      <Form.Item label="Provider" name="provider" required rules={[zodRule(fields.provider)]}>
+        <Select options={SOCIAL_PROVIDER_OPTIONS} placeholder="Select" />
+      </Form.Item>
+      <Form.Item
+        label="Access token"
+        name="accessToken"
+        required={identity === undefined}
+        extra={identity ? 'The saved token is hidden. Leave this empty to keep it.' : undefined}
+        rules={[zodRule(fields.accessToken)]}
+      >
+        <Input.Password
+          maxLength={4000}
+          autoComplete="off"
+          spellCheck={false}
+          placeholder={identity ? 'Leave empty to keep the saved token' : undefined}
+        />
+      </Form.Item>
+      <Form.Item label="Reference" name="referenceId" required rules={[zodRule(fields.referenceId)]}>
+        <Input maxLength={200} autoComplete="off" spellCheck={false} />
+      </Form.Item>
+
+      <FormActions>
+        <Button onClick={onClose}>Cancel</Button>
+        <Button type="primary" htmlType="submit">
+          {identity ? 'Save social identity' : 'Add social identity'}
+        </Button>
+      </FormActions>
+    </Form>
+  );
+}
+
+type SocialIdentityFormDrawerProps = {
+  open: boolean;
+  /** The identity being edited. Missing when a new one is added. */
+  identity?: SocialIdentity;
+  onSubmit: (payload: SocialIdentityPayload) => void;
+  onClose: () => void;
+};
+
+/** Slide-in form to add a social identity, or to edit one with its saved values filled in (except the token). */
+export function SocialIdentityFormDrawer({ open, identity, onSubmit, onClose }: SocialIdentityFormDrawerProps) {
+  return (
+    <FormDrawer
+      title={identity ? 'Edit social identity' : 'New social identity'}
+      open={open}
+      onClose={onClose}
+      width={480}
+    >
+      <SocialIdentityForm identity={identity} onSubmit={onSubmit} onClose={onClose} />
+    </FormDrawer>
+  );
+}
+===== END FILE: src/features/users/components/SocialIdentityFormDrawer.tsx =====
+
+===== FILE: src/features/users/components/SocialIdentitiesSection.tsx =====
+import { PlusOutlined } from '@ant-design/icons';
+import { Button, Table, Typography, type TableColumnsType } from 'antd';
+import { useState } from 'react';
+import { FormSection } from '@/components/ui/PageLayout';
+import { RowActions } from '@/components/ui/RowActions';
+import { SocialIdentityFormDrawer } from '@/features/users/components/SocialIdentityFormDrawer';
+import { SOCIAL_PROVIDER_OPTIONS, getOptionLabel } from '@/features/users/constants';
+import type { SocialIdentityPayload } from '@/features/users/schemas/social-identity.schema';
+import type { SocialIdentity } from '@/features/users/types';
+import '@/features/users/users.css';
+
+const EMPTY = <span className="users-muted">-</span>;
+
+/** A saved identity, plus the access token typed on this page that is not saved yet. */
+export type SocialIdentityRow = SocialIdentity & {
+  accessToken?: string;
+};
+
+/** The access token is a secret, so only its last characters are shown. */
+function maskToken(row: SocialIdentityRow): string {
+  const hint = row.accessToken ? row.accessToken.slice(-4) : row.tokenHint;
+  return hint ? `••••••••${hint}` : '••••••••';
+}
+
+type DrawerState = {
+  /** The identity being edited. Missing when a new one is added. */
+  identity?: SocialIdentityRow;
+};
+
+type SocialIdentitiesSectionProps = {
+  identities: SocialIdentityRow[];
+  onChange: (identities: SocialIdentityRow[]) => void;
+};
+
+/**
+ * The social sign ins of the user: a table with Edit and Delete on each row, and Add social identity below it.
+ * The list is only changed on the page. It is saved when the person presses Update.
+ */
+export function SocialIdentitiesSection({ identities, onChange }: SocialIdentitiesSectionProps) {
+  const [drawer, setDrawer] = useState<DrawerState>();
+
+  const columns: TableColumnsType<SocialIdentityRow> = [
+    {
+      title: 'Provider',
+      dataIndex: 'provider',
+      key: 'provider',
+      width: 130,
+      render: (provider: SocialIdentityRow['provider']) => getOptionLabel(SOCIAL_PROVIDER_OPTIONS, provider),
+    },
+    {
+      title: 'Reference id',
+      dataIndex: 'referenceId',
+      key: 'referenceId',
+      width: 220,
+      render: (referenceId: string) => (
+        <Typography.Text className="users-table__mono" ellipsis={{ tooltip: referenceId }}>
+          {referenceId}
+        </Typography.Text>
+      ),
+    },
+    {
+      title: 'Access token',
+      key: 'accessToken',
+      width: 170,
+      render: (_, row) => <span className="users-table__mono">{maskToken(row)}</span>,
+    },
+    {
+      title: 'Other data',
+      dataIndex: 'otherData',
+      key: 'otherData',
+      width: 220,
+      // Plain text only: this comes from the server.
+      render: (otherData?: string) =>
+        otherData ? <Typography.Text ellipsis={{ tooltip: otherData }}>{otherData}</Typography.Text> : EMPTY,
+    },
+    {
+      title: 'Actions',
+      key: 'actions',
+      width: 110,
+      render: (_, row) => (
+        <RowActions
+          name={getOptionLabel(SOCIAL_PROVIDER_OPTIONS, row.provider)}
+          what="social identity"
+          deleteDescription="It is removed from the list. It is deleted when you press Update."
+          onEdit={() => setDrawer({ identity: row })}
+          onDelete={() => onChange(identities.filter((existing) => existing.id !== row.id))}
+        />
+      ),
+    },
+  ];
+
+  const handleSubmit = (payload: SocialIdentityPayload) => {
+    const editing = drawer?.identity;
+    onChange(
+      editing
+        ? identities.map((row) =>
+            row.id === editing.id
+              ? {
+                  ...row,
+                  provider: payload.provider,
+                  referenceId: payload.referenceId,
+                  // An empty token box keeps the token typed earlier on this page, or the saved one.
+                  accessToken: payload.accessToken ?? row.accessToken,
+                }
+              : row,
+          )
+        : [...identities, { id: crypto.randomUUID(), ...payload }],
+    );
+    setDrawer(undefined);
+  };
+
+  return (
+    <FormSection title="Social identities" description="Google, Facebook or Apple accounts this user signs in with.">
+      <Table<SocialIdentityRow>
+        size="small"
+        rowKey="id"
+        columns={columns}
+        dataSource={identities}
+        pagination={false}
+        scroll={{ x: 850 }}
+        locale={{ emptyText: 'No social identities yet' }}
+      />
+      <Button className="users-list-add" icon={<PlusOutlined />} onClick={() => setDrawer({})}>
+        Add social identity
+      </Button>
+
+      <SocialIdentityFormDrawer
+        open={drawer !== undefined}
+        identity={drawer?.identity}
+        onSubmit={handleSubmit}
+        onClose={() => setDrawer(undefined)}
+      />
+    </FormSection>
+  );
+}
+===== END FILE: src/features/users/components/SocialIdentitiesSection.tsx =====
+
+===== FILE: src/features/users/components/UserOrdersTable.tsx =====
+import { Empty, Table, Tag, Typography, type TableColumnsType } from 'antd';
+import {
+  formatCurrency,
+  formatOrderDate,
+  formatOrderTime,
+  getOrderStatusMeta,
+  getPaymentStatusMeta,
+} from '@/features/orders/format';
+import type { OrderSource } from '@/features/orders/types';
+import type { UserOrder } from '@/features/users/types';
+import { useTableBodyHeight } from '@/hooks/useTableBodyHeight';
+import '@/features/users/users.css';
+
+const SOURCE_LABELS = new Map<OrderSource, string>([
+  ['web', 'Web'],
+  ['android', 'Android'],
+  ['ios', 'iOS'],
+]);
+
+function getColumns(): TableColumnsType<UserOrder> {
+  return [
+    {
+      title: 'Order ID',
+      dataIndex: 'orderId',
+      key: 'orderId',
+      width: 210,
+      render: (orderId: string | undefined) =>
+        orderId ? (
+          <Typography.Text className="users-table__mono" copyable={{ tooltips: ['Copy order ID', 'Copied'] }}>
+            {orderId}
+          </Typography.Text>
+        ) : (
+          <span className="users-muted">Not assigned yet</span>
+        ),
+    },
+    {
+      title: 'Outlet',
+      dataIndex: 'outletName',
+      key: 'outletName',
+      width: 200,
+      render: (outletName: string) => (
+        <Typography.Text ellipsis={{ tooltip: outletName }}>{outletName}</Typography.Text>
+      ),
+    },
+    {
+      title: 'Source',
+      dataIndex: 'source',
+      key: 'source',
+      width: 100,
+      render: (source: OrderSource) => SOURCE_LABELS.get(source) ?? source,
+    },
+    {
+      title: 'Order time',
+      dataIndex: 'createdAt',
+      key: 'createdAt',
+      width: 200,
+      render: (createdAt: string) => `${formatOrderDate(createdAt)}, ${formatOrderTime(createdAt)}`,
+    },
+    {
+      title: 'Payment type',
+      dataIndex: 'paymentType',
+      key: 'paymentType',
+      width: 130,
+      render: (type: UserOrder['paymentType']) => (type === 'ONLINE' ? 'Online' : 'COD'),
+    },
+    {
+      title: 'Payment status',
+      dataIndex: 'paymentStatus',
+      key: 'paymentStatus',
+      width: 150,
+      render: (status: UserOrder['paymentStatus']) => {
+        if (!status) return <span className="users-muted">-</span>;
+        const meta = getPaymentStatusMeta(status);
+        return <Tag color={meta.color}>{meta.label}</Tag>;
+      },
+    },
+    {
+      title: 'Status',
+      dataIndex: 'status',
+      key: 'status',
+      width: 130,
+      render: (status: UserOrder['status']) => {
+        const meta = getOrderStatusMeta(status);
+        return <Tag color={meta.color}>{meta.label}</Tag>;
+      },
+    },
+    {
+      title: 'Total amount',
+      dataIndex: 'totalAmount',
+      key: 'totalAmount',
+      width: 140,
+      align: 'right',
+      render: (amount: number) => formatCurrency(amount),
+    },
+    {
+      title: 'Customer name',
+      key: 'customerName',
+      width: 170,
+      render: (_, order) => order.customer.name,
+    },
+    {
+      title: 'Phone number',
+      key: 'phone',
+      width: 140,
+      render: (_, order) => <span className="users-table__mono">{order.customer.phone}</span>,
+    },
+    {
+      title: 'Delivery address',
+      dataIndex: 'deliveryAddress',
+      key: 'deliveryAddress',
+      width: 340,
+      render: (address: string) => <Typography.Text ellipsis={{ tooltip: address }}>{address}</Typography.Text>,
+    },
+  ];
+}
+
+type UserOrdersTableProps = {
+  orders: UserOrder[];
+  loading?: boolean;
+};
+
+/** The orders of one user, as one virtual list that fits the screen. */
+export function UserOrdersTable({ orders, loading = false }: UserOrdersTableProps) {
+  const { tableRef, bodyHeight } = useTableBodyHeight();
+  const columns = getColumns();
+  const tableWidth = columns.reduce((sum, column) => sum + Number(column.width ?? 0), 0);
+
+  return (
+    <Table<UserOrder>
+      ref={tableRef}
+      className="list-table users-table"
+      virtual
+      rowKey="key"
+      columns={columns}
+      dataSource={orders}
+      loading={loading}
+      pagination={false}
+      scroll={{ x: tableWidth, y: bodyHeight }}
+      locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="This user has no orders" /> }}
+    />
+  );
+}
+===== END FILE: src/features/users/components/UserOrdersTable.tsx =====
+
+===== FILE: src/features/users/pages/EditUserPage.tsx =====
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { App, Button, Col, DatePicker, Form, Input, Result, Row, Select, Skeleton } from 'antd';
+import dayjs from 'dayjs';
+import { useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { FormActions, FormSection, PageHeader } from '@/components/ui/PageLayout';
+import { userQueryKeys } from '@/features/users/api/query-keys';
+import { getUserProfile, updateUserProfile } from '@/features/users/api/users-api';
+import { AddressesSection } from '@/features/users/components/AddressesSection';
+import { SocialIdentitiesSection, type SocialIdentityRow } from '@/features/users/components/SocialIdentitiesSection';
+import { MARITAL_STATUS_OPTIONS } from '@/features/users/constants';
+import { profileFields, type ProfileFormInput } from '@/features/users/schemas/profile.schema';
+import type { UserAddress, UserProfile } from '@/features/users/types';
+import { toDayjs } from '@/lib/form-values';
+import { showZodErrorsInForm, zodRule } from '@/lib/zod-form';
+import '@/features/users/users.css';
+
+const fields = profileFields.shape;
+
+const DATE_FORMAT = 'DD MMM YYYY';
+
+/** Birthdays and anniversaries are in the past. */
+const isFutureDate = (date: dayjs.Dayjs) => date.isAfter(dayjs(), 'day');
+
+type EditUserFormProps = {
+  profile: UserProfile;
+  onDone: () => void;
+};
+
+function EditUserForm({ profile, onDone }: EditUserFormProps) {
+  const [form] = Form.useForm<ProfileFormInput>();
+  const queryClient = useQueryClient();
+  const { message } = App.useApp();
+  // Addresses and social identities are changed on the page and saved together with the profile.
+  const [addresses, setAddresses] = useState<UserAddress[]>(profile.addresses);
+  const [identities, setIdentities] = useState<SocialIdentityRow[]>(profile.socialIdentities);
+
+  const mutation = useMutation({
+    mutationFn: updateUserProfile,
+    onSuccess: async (saved) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: userQueryKeys.lists }),
+        queryClient.invalidateQueries({ queryKey: userQueryKeys.profile(saved.id) }),
+      ]);
+      void message.success(`"${saved.name}" was updated.`);
+      onDone();
+    },
+    onError: () => {
+      void message.error('The user could not be updated. Check that no other user has this email, then try again.');
+    },
+  });
+
+  const handleFinish = (values: ProfileFormInput) => {
+    const result = profileFields.safeParse(values);
+    if (!result.success) {
+      showZodErrorsInForm(form, result.error);
+      return;
+    }
+    mutation.mutate({
+      userId: profile.id,
+      payload: {
+        ...result.data,
+        addresses,
+        // The access token is sent only when it was typed. Otherwise the server keeps the saved one.
+        socialIdentities: identities.map(({ id, provider, referenceId, accessToken }) => ({
+          id,
+          provider,
+          referenceId,
+          accessToken,
+        })),
+      },
+    });
+  };
+
+  return (
+    <div className="users-page__stack">
+      <Form<ProfileFormInput>
+        form={form}
+        layout="vertical"
+        initialValues={{
+          name: profile.name,
+          email: profile.email,
+          merchantNote: profile.merchantNote,
+          profession: profile.profession,
+          maritalStatus: profile.maritalStatus,
+          birthday: toDayjs(profile.birthday),
+          anniversary: toDayjs(profile.anniversary),
+          membershipType: profile.membershipType,
+          catalogType: profile.catalogType,
+          brandName: profile.brandName,
+          companyName: profile.companyName,
+        }}
+        onFinish={handleFinish}
+        scrollToFirstError={{ behavior: 'smooth', block: 'center' }}
+        disabled={mutation.isPending}
+      >
+        <FormSection title="Profile" description="The details of this user.">
+          <Row gutter={16}>
+            <Col xs={24} md={12}>
+              <Form.Item label="Name" name="name" required rules={[zodRule(fields.name)]}>
+                <Input maxLength={100} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item
+                label="Phone number"
+                htmlFor="phone"
+                extra="The user signs in with this number, so it can't be changed here."
+              >
+                <Input id="phone" value={profile.phone} disabled />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item label="Email" name="email" required rules={[zodRule(fields.email)]}>
+                <Input type="email" maxLength={254} autoCapitalize="off" spellCheck={false} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item label="Friendly id" htmlFor="friendlyId">
+                <Input id="friendlyId" value={profile.friendlyId} disabled />
+              </Form.Item>
+            </Col>
+            <Col span={24}>
+              <Form.Item label="Merchant note" name="merchantNote" rules={[zodRule(fields.merchantNote)]}>
+                <Input.TextArea autoSize={{ minRows: 2, maxRows: 6 }} maxLength={500} showCount />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item label="Profession" name="profession" rules={[zodRule(fields.profession)]}>
+                <Input maxLength={80} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item label="Marital status" name="maritalStatus" rules={[zodRule(fields.maritalStatus)]}>
+                <Select allowClear options={MARITAL_STATUS_OPTIONS} placeholder="Select" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item label="Birthday" name="birthday" rules={[zodRule(fields.birthday)]}>
+                <DatePicker
+                  format={DATE_FORMAT}
+                  disabledDate={isFutureDate}
+                  placeholder="Birthday"
+                  style={{ width: '100%' }}
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item label="Anniversary" name="anniversary" rules={[zodRule(fields.anniversary)]}>
+                <DatePicker
+                  format={DATE_FORMAT}
+                  disabledDate={isFutureDate}
+                  placeholder="Anniversary"
+                  style={{ width: '100%' }}
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item label="Membership type" name="membershipType" rules={[zodRule(fields.membershipType)]}>
+                <Input maxLength={60} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item label="Catalog type" name="catalogType" rules={[zodRule(fields.catalogType)]}>
+                <Input maxLength={60} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item label="Brand name" name="brandName" rules={[zodRule(fields.brandName)]}>
+                <Input maxLength={100} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item label="Company name" name="companyName" rules={[zodRule(fields.companyName)]}>
+                <Input maxLength={100} />
+              </Form.Item>
+            </Col>
+          </Row>
+        </FormSection>
+      </Form>
+
+      {/* These two have their own forms in a side panel, so they sit outside the profile form. */}
+      <AddressesSection addresses={addresses} onChange={setAddresses} />
+      <SocialIdentitiesSection identities={identities} onChange={setIdentities} />
+
+      <FormActions>
+        <Button onClick={onDone} disabled={mutation.isPending}>
+          Cancel
+        </Button>
+        <Button type="primary" loading={mutation.isPending} onClick={() => form.submit()}>
+          Update
+        </Button>
+      </FormActions>
+    </div>
+  );
+}
+
+/** Edit user profile (/users/:userId/edit): the details, addresses and social identities of one user. */
+export default function EditUserPage() {
+  const { userId = '' } = useParams();
+  const navigate = useNavigate();
+  const goBack = () => void navigate('/users');
+
+  const profileQuery = useQuery({
+    queryKey: userQueryKeys.profile(userId),
+    queryFn: () => getUserProfile(userId),
+    retry: false,
+  });
+
+  if (profileQuery.isError) {
+    return (
+      <Result
+        status="404"
+        title="User not found"
+        subTitle="The user may have been removed, or the link is wrong."
+        extra={
+          <Button type="primary" onClick={goBack}>
+            Back to users
+          </Button>
+        }
+      />
+    );
+  }
+
+  return (
+    <div className="users-page users-page__stack">
+      <PageHeader
+        title="Edit user profile"
+        subtitle="Change the details, addresses and social identities of this user."
+        backLabel="Back to users"
+        onBack={goBack}
+      />
+      {profileQuery.isPending ? (
+        <Skeleton active paragraph={{ rows: 10 }} />
+      ) : (
+        <EditUserForm profile={profileQuery.data} onDone={goBack} />
+      )}
+    </div>
+  );
+}
+===== END FILE: src/features/users/pages/EditUserPage.tsx =====
+
+===== FILE: src/features/users/pages/UserOrdersPage.tsx =====
+import { ArrowLeftOutlined } from '@ant-design/icons';
+import { useQuery } from '@tanstack/react-query';
+import { Button } from 'antd';
+import { useNavigate, useParams } from 'react-router-dom';
+import { ListPanel } from '@/components/ui/ListPanel';
+import { LoadError } from '@/components/ui/LoadError';
+import { userQueryKeys } from '@/features/users/api/query-keys';
+import { listUserOrders } from '@/features/users/api/user-activity-api';
+import { UserOrdersTable } from '@/features/users/components/UserOrdersTable';
+import { formatCount } from '@/utils/number-format';
+import '@/features/users/users.css';
+
+/** The orders of one user (/users/:userId/orders). */
+export default function UserOrdersPage() {
+  const { userId = '' } = useParams();
+  const navigate = useNavigate();
+
+  const ordersQuery = useQuery({
+    queryKey: userQueryKeys.orders(userId),
+    queryFn: () => listUserOrders(userId),
+  });
+
+  const orders = ordersQuery.data ?? [];
+
+  return (
+    <div className="users-page">
+      <ListPanel
+        title="View orders"
+        count={ordersQuery.data ? orders.length : undefined}
+        subtitle="Every order placed by this user, newest first."
+        toolbar={
+          <Button icon={<ArrowLeftOutlined />} onClick={() => void navigate('/users')}>
+            Back to users
+          </Button>
+        }
+        footer={ordersQuery.data && `Showing ${formatCount(orders.length)} orders · Sample data`}
+      >
+        {ordersQuery.isError ? (
+          <LoadError what="orders" onRetry={() => void ordersQuery.refetch()} />
+        ) : (
+          <UserOrdersTable orders={orders} loading={ordersQuery.isPending} />
+        )}
+      </ListPanel>
+    </div>
+  );
+}
+===== END FILE: src/features/users/pages/UserOrdersPage.tsx =====
+
+===== FILE: src/features/users/pages/UsersPage.tsx =====
+import { DatabaseOutlined, EnvironmentOutlined, SyncOutlined } from '@ant-design/icons';
+import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { App, Button } from 'antd';
+import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { ListPanel } from '@/components/ui/ListPanel';
+import { LoadError } from '@/components/ui/LoadError';
+import { userQueryKeys } from '@/features/users/api/query-keys';
+import { replaceUserInLists } from '@/features/users/api/users-cache';
+import { listUsersPage, setOtpLoginLock, setUserForceUpdate } from '@/features/users/api/users-api';
+import { ReferralModal } from '@/features/users/components/ReferralModal';
+import { UserSearchBar } from '@/features/users/components/UserSearchBar';
+import { UsersTable } from '@/features/users/components/UsersTable';
+import { WalletTransactionsModal } from '@/features/users/components/WalletTransactionsModal';
+import type { UserSearch } from '@/features/users/schemas/user.schema';
+import type { User } from '@/features/users/types';
+import { formatCount } from '@/utils/number-format';
+import '@/features/users/users.css';
+
+const everyone: UserSearch = { field: 'email', term: undefined };
+
+export default function UsersPage() {
+  const navigate = useNavigate();
+  const [search, setSearch] = useState<UserSearch>(everyone);
+  const queryClient = useQueryClient();
+  const { message } = App.useApp();
+  // The user whose referral information or wallet transactions are open in a window.
+  const [referralUser, setReferralUser] = useState<User>();
+  const [walletUser, setWalletUser] = useState<User>();
+
+  const usersQuery = useInfiniteQuery({
+    queryKey: userQueryKeys.list(search),
+    queryFn: ({ pageParam }) => listUsersPage({ search, page: pageParam }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => lastPage.nextPage,
+  });
+
+  // The row changes when the server has answered, with the user the server sends back.
+  const lockMutation = useMutation({
+    mutationFn: setOtpLoginLock,
+    onSuccess: (saved) => {
+      replaceUserInLists(queryClient, saved);
+      void message.success(`OTP login was ${saved.otpLoginLocked ? 'locked' : 'unlocked'} for ${saved.phone}.`);
+    },
+    onError: () => {
+      void message.error('OTP login could not be changed. Please try again.');
+    },
+  });
+
+  const forceUpdateMutation = useMutation({
+    mutationFn: setUserForceUpdate,
+    onSuccess: (saved) => {
+      replaceUserInLists(queryClient, saved);
+      void message.success(`Force update was turned ${saved.forceUpdate ? 'on' : 'off'} for ${saved.phone}.`);
+    },
+    onError: () => {
+      void message.error('Force update could not be changed. Please try again.');
+    },
+  });
+
+  const users = usersQuery.data?.pages.flatMap((page) => page.users) ?? [];
+  const total = usersQuery.data?.pages.at(-1)?.total;
+
+  const loadMore = () => {
+    if (usersQuery.hasNextPage && !usersQuery.isFetchingNextPage) void usersQuery.fetchNextPage();
+  };
+
+  return (
+    <div className="users-page">
+      <ListPanel
+        title="All users"
+        count={total}
+        subtitle="Search customers, see their orders and manage their accounts."
+        toolbar={
+          <>
+            <Button icon={<SyncOutlined />} onClick={() => void navigate('/users/force-update')}>
+              Force update
+            </Button>
+            <Button icon={<EnvironmentOutlined />} onClick={() => void navigate('/users/non-serviceable')}>
+              Non serviceable
+            </Button>
+            <Button type="primary" icon={<DatabaseOutlined />} onClick={() => void navigate('/users/tasks')}>
+              Generate dump
+            </Button>
+          </>
+        }
+        footer={
+          total !== undefined &&
+          `Showing ${formatCount(users.length)} of ${formatCount(total)} users${
+            usersQuery.hasNextPage ? ' · Scroll down to load more' : ''
+          } · Sample data`
+        }
+      >
+        <UserSearchBar onSearch={setSearch} />
+
+        {usersQuery.isError && users.length === 0 ? (
+          <LoadError what="users" onRetry={() => void usersQuery.refetch()} />
+        ) : (
+          <UsersTable
+            users={users}
+            loading={usersQuery.isPending}
+            onReachEnd={loadMore}
+            lockingUserId={lockMutation.isPending ? lockMutation.variables.userId : undefined}
+            forceUpdatingUserId={forceUpdateMutation.isPending ? forceUpdateMutation.variables.userId : undefined}
+            onEdit={(user) => void navigate(`/users/${encodeURIComponent(user.id)}/edit`)}
+            onViewReferral={setReferralUser}
+            onViewOrders={(user) => void navigate(`/users/${encodeURIComponent(user.id)}/orders`)}
+            onViewWallet={setWalletUser}
+            onToggleOtpLock={(user) => lockMutation.mutate({ userId: user.id, locked: !user.otpLoginLocked })}
+            onToggleForceUpdate={(user) => forceUpdateMutation.mutate({ userId: user.id, enabled: !user.forceUpdate })}
+          />
+        )}
+      </ListPanel>
+
+      <ReferralModal user={referralUser} onClose={() => setReferralUser(undefined)} />
+      {/* The key starts the wallet window on the newest transactions every time it is opened. */}
+      <WalletTransactionsModal
+        key={walletUser?.id ?? 'closed'}
+        user={walletUser}
+        onClose={() => setWalletUser(undefined)}
+      />
+    </div>
+  );
+}
+===== END FILE: src/features/users/pages/UsersPage.tsx =====
+
+===== FILE: src/features/users/users.css =====
+/* Styles for the Users feature. All sizes and colors come from src/theme/tokens.ts via CSS variables. */
+
+.users-page {
+  width: 100%;
+}
+
+/* Form sections and panels stacked with a gap between them. */
+.users-page__stack {
+  display: grid;
+  gap: 16px;
+  /* minmax(0, ...) lets a wide table scroll inside its card instead of stretching the whole page. */
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.users-muted {
+  color: var(--color-text-muted);
+}
+
+/* ---------- Tables ---------- */
+
+.users-table__mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--font-size-compact);
+}
+
+/* Every row of the virtual list has the same height, so the scrollbar is exact. */
+.users-table .ant-table-tbody-virtual .ant-table-cell {
+  align-items: center;
+  box-sizing: border-box;
+  display: flex;
+  height: 56px;
+  padding-block: 0;
+}
+
+/* ---------- Search bar (Manage Users) ---------- */
+
+.user-search {
+  align-items: end;
+  display: grid;
+  gap: 0 12px;
+  grid-template-columns: 200px minmax(0, 380px) auto;
+  margin-bottom: 16px;
+}
+
+.user-search .ant-form-item {
+  margin-bottom: 0;
+}
+
+@media (max-width: 767px) {
+  .user-search {
+    gap: 12px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* The empty label that lines the button up with the fields is not needed when they are stacked. */
+  .user-search__submit .ant-form-item-label {
+    display: none;
+  }
+
+  .user-search__submit .ant-btn {
+    width: 100%;
+  }
+}
+
+/* ---------- Force update switches ---------- */
+
+.switch-grid {
+  display: grid;
+  gap: 12px 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 20px;
+}
+
+.switch-card.ant-form-item {
+  background: var(--color-table-header-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-medium);
+  margin: 0;
+  padding: 12px 16px;
+}
+
+.switch-card__label.ant-typography,
+.switch-card__hint.ant-typography {
+  display: block;
+}
+
+.switch-card__hint.ant-typography {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-compact);
+}
+
+@media (max-width: 575px) {
+  .switch-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---------- Task details ---------- */
+
+.task-details.ant-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-large);
+}
+
+.task-details__hint.ant-typography {
+  color: var(--color-text-muted);
+  display: block;
+  font-size: var(--font-size-compact);
+  font-weight: var(--font-weight-regular);
+}
+
+.task-details__row {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--font-size-compact);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- Row action toggles (lock and force update) ---------- */
+
+/* Force update: green when on, red when off. The tooltip and the button label say it in words too. */
+.users-toggle--on.ant-btn .anticon {
+  color: var(--color-positive);
+}
+
+.users-toggle--off.ant-btn .anticon {
+  color: var(--color-negative);
+}
+
+.users-toggle--locked.ant-btn .anticon {
+  color: var(--color-negative);
+}
+
+/* ---------- Edit user page ---------- */
+
+.users-list-add.ant-btn {
+  margin-top: 16px;
+}
+
+/* ---------- Windows (referral information, wallet transactions) ---------- */
+
+.users-modal-section + .users-modal-section {
+  margin-top: 24px;
+}
+===== END FILE: src/features/users/users.css =====
+
