@@ -1,0 +1,1874 @@
+ABIS PRO ADMIN CONSOLE - DASHBOARD REDESIGN (17 files written)
+======================================================================
+New dashboard from the Figma image: KPI cards with change badges, Order activity chart, Needs attention list,
+Your workspace tiles and the Current orders panel. Also adds status-chip colors to theme/tokens.ts and lets the
+Orders page open pre-filled from the dashboard search (/orders?search=...).
+Apply: node apply-bundle.mjs --dry-run dashboard-bundle.txt   then   node apply-bundle.mjs dashboard-bundle.txt
+
+===== FILE: src/theme/tokens.ts =====
+/**
+ * DESIGN TOKENS: the one file to edit when you want to change how the app looks.
+ *
+ * - Ant Design components read these values through `antd-theme.ts`.
+ * - Our own CSS files read them as CSS variables, for example `var(--color-primary)`
+ *   or `var(--layout-header-height)`. See `css-variables.ts` for the naming rule.
+ *
+ * Rule for the team: never hard-code a brand color, font size or layout size in a
+ * component or CSS file. Add it here, then use the token.
+ */
+
+export const colors = {
+  /** Brand */
+  primary: '#1F4E79',
+  primaryDark: '#173B60',
+  accent: '#F3D54A',
+
+  /** Text and icons placed on top of the primary color */
+  onPrimary: '#FFFFFF',
+  onPrimaryMuted: 'rgba(255, 255, 255, 0.78)',
+
+  /** Surfaces */
+  surface: '#FFFFFF',
+  pageBackground: '#F5F5F5',
+  border: '#E9EDF3',
+
+  /** Text */
+  textStrong: '#10263F',
+  textMuted: '#5B6B7F',
+
+  /** Sidebar menu states */
+  menuItemSelected: '#DCE6F2',
+  menuItemHover: '#F0F4F9',
+
+  /** Tables */
+  tableHeaderBg: '#F7F9FC',
+
+  /** Loyalty tier cards (Settings → Earning points): each header is a gradient from Start to End, with Text on top */
+  tierGoldStart: '#F8E7A0',
+  tierGoldEnd: '#E0B93F',
+  tierGoldText: '#4A3600',
+  tierSilverStart: '#F1F3F6',
+  tierSilverEnd: '#BCC4CF',
+  tierSilverText: '#2F3A48',
+  tierPlatinumStart: '#EAF1F8',
+  tierPlatinumEnd: '#A9BFD3',
+  tierPlatinumText: '#1F3A56',
+
+  /** Change indicators (always shown with an arrow and text, never color alone) */
+  positive: '#1F7A3D',
+  positiveSoft: '#E6F4EA',
+  negative: '#B42318',
+  negativeSoft: '#FDECEA',
+
+  /** Status chips and icon tiles (Dashboard): each tone is a soft background plus a darker color for the text or icon */
+  warning: '#8A6100',
+  warningSoft: '#FBF1D6',
+  info: '#2A5DA8',
+  infoSoft: '#E6EEF9',
+  purple: '#6B46B8',
+  purpleSoft: '#EFE9FA',
+  teal: '#1B7C84',
+  tealSoft: '#E1F3F4',
+  pink: '#B8456B',
+  pinkSoft: '#FBE7EE',
+  orange: '#B85A14',
+  orangeSoft: '#FCEBDD',
+  neutral: '#4B5B6E',
+  neutralSoft: '#EDF0F4',
+} as const;
+
+export const typography = {
+  fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+  fontSize: {
+    micro: '9px',
+    logoSmall: '5px',
+    tiny: '10px',
+    small: '11px',
+    compact: '12px',
+    iconSmall: '13px',
+    base: '14px',
+    medium: '15px',
+    large: '16px',
+    iconLarge: '17px',
+    titleSmall: '18px',
+    title: '20px',
+    pageTitle: '24px',
+    iconHero: '21px',
+    heroIcon: '22px',
+    display: 'clamp(30px, 3.2vw, 42px)',
+    metric: 'clamp(23px, 2.4vw, 29px)',
+    metricMobile: '24px',
+    displayMobile: '32px',
+  },
+  lineHeight: {
+    tight: 1,
+    heading: 1.12,
+    compact: 1.15,
+    base: 1.5,
+    relaxed: 1.7,
+  },
+  fontWeight: {
+    regular: 400,
+    medium: 600,
+    semibold: 650,
+    bold: 700,
+    heavy: 800,
+  },
+  letterSpacing: {
+    logo: '1px',
+    label: '1.1px',
+    wide: '2px',
+    heading: '-0.35px',
+    display: '-1.5px',
+    metric: '-0.8px',
+    badge: '0.6px',
+  },
+} as const;
+
+/** Sizes in pixels */
+export const layout = {
+  headerHeight: 64,
+  sidebarWidth: 260,
+  sidebarCollapsedWidth: 80,
+  mobileDrawerWidth: 280,
+  contentPadding: 24,
+  contentPaddingMobile: 16,
+} as const;
+
+/** Corner rounding in pixels */
+export const radius = {
+  small: 6,
+  medium: 8,
+  large: 12,
+} as const;
+
+/** Sidebar menu look */
+export const sidebar = {
+  itemHeight: 36,
+  itemGap: 2,
+  groupTitleFontSize: typography.fontSize.base,
+} as const;
+===== END FILE: src/theme/tokens.ts =====
+
+===== FILE: src/features/orders/pages/OrdersPage.tsx =====
+import { SearchOutlined, ShopOutlined } from '@ant-design/icons';
+import { useMutation } from '@tanstack/react-query';
+import { App, Card, Input, Select, Space, Tabs, Tag, Typography } from 'antd';
+import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { mockOrders } from '@/features/orders/api/mock-orders';
+import { updateOrder, type UpdateOrderInput } from '@/features/orders/api/update-order';
+import { EditOrderModal } from '@/features/orders/components/EditOrderModal';
+import { OrderDetailsDrawer } from '@/features/orders/components/OrderDetailsDrawer';
+import { OrdersTable } from '@/features/orders/components/OrdersTable';
+import { getOrderStatusMeta } from '@/features/orders/format';
+import { ORDER_STATUSES, type Order, type OrderStatus } from '@/features/orders/types';
+import './OrdersPage.css';
+
+type SearchField = 'phone' | 'email' | 'orderId';
+type StatusFilter = 'ALL' | OrderStatus;
+
+type SearchFieldDetails = { label: string; placeholder: string; inputMode: 'tel' | 'email' | 'text' };
+
+const searchFields = new Map<SearchField, SearchFieldDetails>([
+  ['phone', { label: 'Phone', placeholder: 'Search by phone number', inputMode: 'tel' }],
+  ['email', { label: 'Email', placeholder: 'Search by customer email', inputMode: 'email' }],
+  ['orderId', { label: 'Order ID', placeholder: 'Search by order ID', inputMode: 'text' }],
+]);
+
+const searchFieldOptions = [...searchFields].map(([field, details]) => ({ value: field, label: details.label }));
+
+function getSearchField(field: SearchField): SearchFieldDetails {
+  return searchFields.get(field) ?? { label: 'Search', placeholder: 'Search', inputMode: 'text' };
+}
+
+function matchesSearch(order: Order, field: SearchField, rawSearch: string): boolean {
+  const search = rawSearch.trim().toLowerCase();
+  if (!search) return true;
+
+  if (field === 'phone') {
+    const digits = search.replace(/\D/g, '');
+    return digits.length > 0 && order.customer.phone.includes(digits);
+  }
+  if (field === 'email') return (order.customer.email ?? '').toLowerCase().includes(search);
+  return (order.orderId ?? '').toLowerCase().includes(search);
+}
+
+const MAX_SEARCH_LENGTH = 100;
+
+/** Picks the search box for text that came from outside (the Dashboard search): an @ means email, digits mean phone. */
+function guessSearchField(text: string): SearchField {
+  if (text.includes('@')) return 'email';
+  if (/^[\d\s+-]+$/.test(text)) return 'phone';
+  return 'orderId';
+}
+
+export default function OrdersPage() {
+  const { message } = App.useApp();
+  // The Dashboard search opens this page as /orders?search=text.
+  const [searchParams] = useSearchParams();
+  const startingSearch = (searchParams.get('search') ?? '').trim().slice(0, MAX_SEARCH_LENGTH);
+  // TODO: Replace the sample data with a TanStack Query call once the orders API is ready.
+  const [orders, setOrders] = useState<Order[]>(mockOrders);
+  const [outletFilter, setOutletFilter] = useState<string>();
+  const [searchField, setSearchField] = useState<SearchField>(
+    startingSearch ? guessSearchField(startingSearch) : 'phone',
+  );
+  const [search, setSearch] = useState(startingSearch);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
+  const [viewingKey, setViewingKey] = useState<string>();
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [editingKey, setEditingKey] = useState<string>();
+  const activeSearch = getSearchField(searchField);
+
+  const outletOptions = [...new Set(orders.map((order) => order.outletName))]
+    .sort((a, b) => a.localeCompare(b))
+    .map((outlet) => ({ value: outlet, label: outlet }));
+
+  // Outlet and search filters first, so the status tab counts reflect them.
+  const filteredOrders = orders.filter(
+    (order) => (!outletFilter || order.outletName === outletFilter) && matchesSearch(order, searchField, search),
+  );
+  const countByStatus = (status: OrderStatus) => filteredOrders.filter((order) => order.status === status).length;
+  const visibleOrders =
+    statusFilter === 'ALL' ? filteredOrders : filteredOrders.filter((order) => order.status === statusFilter);
+
+  const statusTabs = [
+    { key: 'ALL', label: 'All orders', count: filteredOrders.length },
+    ...ORDER_STATUSES.map((status) => ({
+      key: status,
+      label: getOrderStatusMeta(status).label,
+      count: countByStatus(status),
+    })),
+  ].map((tab) => ({
+    key: tab.key,
+    label: (
+      <span className="orders-tab">
+        {tab.label}
+        <span className="orders-tab__count">{tab.count}</span>
+      </span>
+    ),
+  }));
+
+  const viewingOrder = orders.find((order) => order.key === viewingKey);
+  const editingOrder = orders.find((order) => order.key === editingKey);
+
+  const mutation = useMutation({
+    mutationFn: updateOrder,
+    onSuccess: (saved: UpdateOrderInput) => {
+      setOrders((current) =>
+        current.map((order) =>
+          order.key === saved.key
+            ? {
+                ...order,
+                status: saved.status,
+                instructions: saved.instructions,
+                // The detailed state belongs to the old status, so drop it when the status changes.
+                subStatus: saved.status === order.status ? order.subStatus : undefined,
+              }
+            : order,
+        ),
+      );
+      setEditingKey(undefined);
+      void message.success(saved.status === 'REJECTED' ? 'The order was rejected.' : 'The order was updated.');
+    },
+    onError: () => {
+      void message.error('The order could not be updated. Please try again.');
+    },
+  });
+
+  const openOrder = (order: Order) => {
+    setViewingKey(order.key);
+    setIsDrawerOpen(true);
+  };
+
+  return (
+    <div className="orders-page">
+      <Card className="orders-panel" variant="borderless">
+        <div className="orders-panel__head">
+          <div>
+            <Typography.Title className="orders-panel__title" level={4}>
+              All orders
+              <Tag className="orders-panel__count">{orders.length}</Tag>
+            </Typography.Title>
+            <Typography.Text className="orders-panel__subtitle">
+              Track orders across outlets, update their status and review order details.
+            </Typography.Text>
+          </div>
+
+          <div className="orders-panel__toolbar">
+            <Select
+              allowClear
+              showSearch
+              className="orders-panel__outlet"
+              placeholder="All outlets"
+              suffixIcon={<ShopOutlined />}
+              options={outletOptions}
+              value={outletFilter}
+              onChange={setOutletFilter}
+              aria-label="Filter by outlet"
+            />
+            <Space.Compact className="orders-panel__search">
+              <Select
+                value={searchField}
+                options={searchFieldOptions}
+                onChange={(field) => {
+                  setSearchField(field);
+                  setSearch('');
+                }}
+                popupMatchSelectWidth={false}
+                aria-label="Search by"
+              />
+              <Input
+                allowClear
+                prefix={<SearchOutlined />}
+                placeholder={activeSearch.placeholder}
+                inputMode={activeSearch.inputMode}
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                aria-label={activeSearch.placeholder}
+              />
+            </Space.Compact>
+          </div>
+        </div>
+
+        <Tabs
+          className="orders-panel__tabs"
+          activeKey={statusFilter}
+          onChange={(key) => setStatusFilter(key as StatusFilter)}
+          items={statusTabs}
+        />
+
+        <OrdersTable orders={visibleOrders} onView={openOrder} onEdit={(order) => setEditingKey(order.key)} />
+
+        <Typography.Text className="orders-panel__footer">
+          Showing {visibleOrders.length} of {orders.length} orders · Sample data
+        </Typography.Text>
+      </Card>
+
+      <OrderDetailsDrawer
+        order={viewingOrder}
+        open={isDrawerOpen}
+        isRejecting={mutation.isPending && mutation.variables.status === 'REJECTED'}
+        onClose={() => setIsDrawerOpen(false)}
+        onReject={(order) => mutation.mutate({ key: order.key, status: 'REJECTED', instructions: order.instructions })}
+        onPrint={(document) =>
+          void message.info(`Printing the ${document === 'receipt' ? 'receipt' : 'label'} is not connected yet.`)
+        }
+      />
+
+      {editingOrder && (
+        <EditOrderModal
+          order={editingOrder}
+          saving={mutation.isPending}
+          onCancel={() => setEditingKey(undefined)}
+          onSave={(order, changes) => mutation.mutate({ key: order.key, ...changes })}
+        />
+      )}
+    </div>
+  );
+}
+===== END FILE: src/features/orders/pages/OrdersPage.tsx =====
+
+===== FILE: src/features/dashboard/api/dashboard-api.ts =====
+import { buildMockSummary, fakeNetworkDelay, mockCurrentOrders } from '@/features/dashboard/api/mock-dashboard';
+import type { CurrentOrder, DashboardRange, DashboardSummary } from '@/features/dashboard/types';
+
+/**
+ * SAMPLE: these functions return the sample data in `mock-dashboard.ts` so the page can be tried.
+ * When the API is ready, only this file changes: the page keeps working as it is.
+ */
+
+/**
+ * Numbers for the cards, the chart and the lists for the chosen period.
+ *
+ * TODO: const { data } = await apiClient.get<DashboardSummary>('/dashboard/summary', { params: { range } });
+ *       return data;
+ */
+export async function getDashboardSummary(range: DashboardRange): Promise<DashboardSummary> {
+  await fakeNetworkDelay();
+  return buildMockSummary(range);
+}
+
+/**
+ * Today's active orders, problems first (no operator, delayed), then the newest.
+ *
+ * TODO: const { data } = await apiClient.get<CurrentOrder[]>('/dashboard/current-orders');
+ *       return data;
+ */
+export async function listCurrentOrders(): Promise<CurrentOrder[]> {
+  await fakeNetworkDelay();
+  return structuredClone(mockCurrentOrders);
+}
+===== END FILE: src/features/dashboard/api/dashboard-api.ts =====
+
+===== FILE: src/features/dashboard/api/mock-dashboard.ts =====
+import type { CurrentOrder, DashboardRange, DashboardSummary } from '@/features/dashboard/types';
+
+/**
+ * SAMPLE DATA: used until the dashboard API is connected.
+ * Replace the functions in `dashboard-api.ts` with real calls, then delete this file.
+ */
+
+const FAKE_NETWORK_DELAY_MS = 400;
+
+/** Waits a little, like a real request would. */
+export function fakeNetworkDelay(): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, FAKE_NETWORK_DELAY_MS));
+}
+
+type PeriodSample = {
+  revenue: [current: number, previous: number];
+  orders: [number, number];
+  cancelled: [number, number];
+};
+
+const periodSamples = new Map<DashboardRange, PeriodSample>([
+  ['today', { revenue: [48_260, 43_090], orders: [38, 35], cancelled: [3, 2] }],
+  ['7days', { revenue: [301_420, 281_900], orders: [238, 226], cancelled: [17, 21] }],
+  ['30days', { revenue: [1_248_300, 1_191_500], orders: [986, 961], cancelled: [74, 70] }],
+]);
+
+const fallbackSample: PeriodSample = { revenue: [0, 0], orders: [0, 0], cancelled: [0, 0] };
+
+export function buildMockSummary(range: DashboardRange): DashboardSummary {
+  const sample = periodSamples.get(range) ?? fallbackSample;
+  const [revenue, previousRevenue] = sample.revenue;
+  const [orders, previousOrders] = sample.orders;
+  const average = (total: number, count: number) => (count > 0 ? Math.round(total / count) : 0);
+
+  return {
+    updatedAt: new Date().toISOString(),
+    revenue: { current: revenue, previous: previousRevenue },
+    orders: { current: orders, previous: previousOrders },
+    averageOrderValue: {
+      current: average(revenue, orders),
+      previous: average(previousRevenue, previousOrders),
+    },
+    cancelledOrders: { current: sample.cancelled[0], previous: sample.cancelled[1] },
+    weeklyOrders: [20, 24, 28, 21, 34, 40, 41],
+    attention: {
+      ordersWithoutOperator: 4,
+      ordersDelayed: 2,
+      failedPayments: 3,
+      outletsOffline: 1,
+      couponsExpiring: 6,
+    },
+    workspace: {
+      outlets: 31,
+      outletsOpen: 27,
+      operators: 99,
+      operatorsOnline: 64,
+      users: 26_307,
+      usersThisWeek: 312,
+      coupons: 29_541,
+      couponsActive: 1_204,
+      orders: 90,
+      catalogs: 22,
+      applications: 2,
+    },
+  };
+}
+
+export const mockCurrentOrders: CurrentOrder[] = [
+  {
+    id: 'o-1042',
+    orderNumber: '1042',
+    customerName: 'Aarav Sharma',
+    outletName: 'Smriti Nagar Abis Laziz',
+    itemCount: 3,
+    amount: 640,
+    stage: 'PENDING',
+    minutesAgo: 2,
+    hasNoOperator: true,
+  },
+  {
+    id: 'o-1040',
+    orderNumber: '1040',
+    customerName: 'Rohan Verma',
+    outletName: 'PRD Khamla L203',
+    itemCount: 5,
+    amount: 1180,
+    stage: 'PREPARING',
+    minutesAgo: 44,
+    delayedMinutes: 12,
+  },
+  {
+    id: 'o-1041',
+    orderNumber: '1041',
+    customerName: 'Meera Patel',
+    outletName: 'PRD Ajni L202',
+    itemCount: 1,
+    amount: 220,
+    stage: 'PREPARING',
+    minutesAgo: 8,
+  },
+  {
+    id: 'o-1039',
+    orderNumber: '1039',
+    customerName: 'Isha Nair',
+    outletName: 'Telibandha Raipur',
+    itemCount: 2,
+    amount: 410,
+    stage: 'ON_THE_WAY',
+    minutesAgo: 21,
+  },
+  {
+    id: 'o-1038',
+    orderNumber: '1038',
+    customerName: 'Kabir Singh',
+    outletName: 'Shivanand Nagar Raipur',
+    itemCount: 4,
+    amount: 890,
+    stage: 'ON_THE_WAY',
+    minutesAgo: 27,
+  },
+  {
+    id: 'o-1037',
+    orderNumber: '1037',
+    customerName: 'Ananya Rao',
+    outletName: 'Supela Chowk Bhilai',
+    itemCount: 2,
+    amount: 365,
+    stage: 'DELIVERED',
+    minutesAgo: 35,
+  },
+];
+===== END FILE: src/features/dashboard/api/mock-dashboard.ts =====
+
+===== FILE: src/features/dashboard/api/query-keys.ts =====
+import type { DashboardRange } from '@/features/dashboard/types';
+
+/** Names of the cached dashboard data. */
+export const dashboardQueryKeys = {
+  summary: (range: DashboardRange) => ['dashboard', 'summary', range] as const,
+  currentOrders: ['dashboard', 'current-orders'] as const,
+};
+===== END FILE: src/features/dashboard/api/query-keys.ts =====
+
+===== FILE: src/features/dashboard/components/ActivityChart.tsx =====
+import { Card, Tag, Typography } from 'antd';
+import { useElementWidth } from '@/hooks/useElementWidth';
+import { formatCount } from '@/utils/number-formats';
+
+const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+const HEIGHT = 230;
+const SIDE_SPACE = 20;
+const TOP_SPACE = 24;
+const BOTTOM_SPACE = 34;
+/** The highest day sits at this share of the chart height, so the line never touches the top. */
+const HEADROOM = 1.5;
+
+type ActivityChartProps = {
+  /** Orders per day, Monday to Sunday */
+  weeklyOrders: number[];
+};
+
+/** Weekly order volume as a line with a soft area under it. */
+export function ActivityChart({ weeklyOrders }: ActivityChartProps) {
+  const [chartRef, width] = useElementWidth<HTMLDivElement>();
+
+  const innerWidth = Math.max(width - SIDE_SPACE * 2, 0);
+  const baseline = HEIGHT - BOTTOM_SPACE;
+  const innerHeight = baseline - TOP_SPACE;
+  const top = Math.max(...weeklyOrders, 1) * HEADROOM;
+  const lastIndex = weeklyOrders.length - 1;
+
+  const x = (index: number) => SIDE_SPACE + (lastIndex <= 0 ? innerWidth / 2 : (index / lastIndex) * innerWidth);
+  const y = (value: number) => baseline - (value / top) * innerHeight;
+
+  const linePath = weeklyOrders.map((value, index) => `${index === 0 ? 'M' : 'L'}${x(index)},${y(value)}`).join(' ');
+  const areaPath = `${linePath} L${x(lastIndex)},${baseline} L${x(0)},${baseline} Z`;
+  const summary = weeklyOrders.map((value, index) => `${DAYS.at(index) ?? ''} ${formatCount(value)}`).join(', ');
+
+  return (
+    <Card className="dash-card dash-activity" variant="borderless">
+      <div className="dash-card__head">
+        <div>
+          <Typography.Title className="dash-card__title" level={2}>
+            Order activity
+          </Typography.Title>
+          <Typography.Text className="dash-card__subtitle">Weekly order volume</Typography.Text>
+        </div>
+        {/* TODO: remove when the chart is fed by real data. */}
+        <Tag className="dash-sample-tag">SAMPLE</Tag>
+      </div>
+
+      <div className="dash-activity__chart" ref={chartRef}>
+        {width > 0 && (
+          <svg width={width} height={HEIGHT} role="img" aria-label={`Orders per day: ${summary}`}>
+            <path className="dash-activity__area" d={areaPath} />
+            <path className="dash-activity__line" d={linePath} />
+            {weeklyOrders.map((value, index) => (
+              <circle className="dash-activity__point" cx={x(index)} cy={y(value)} key={DAYS.at(index)} r={4.5}>
+                <title>{`${DAYS.at(index) ?? ''}: ${formatCount(value)} orders`}</title>
+              </circle>
+            ))}
+            {DAYS.map((day, index) => (
+              <text className="dash-activity__day" key={day} textAnchor="middle" x={x(index)} y={HEIGHT - 8}>
+                {day}
+              </text>
+            ))}
+          </svg>
+        )}
+      </div>
+    </Card>
+  );
+}
+===== END FILE: src/features/dashboard/components/ActivityChart.tsx =====
+
+===== FILE: src/features/dashboard/components/CurrentOrdersCard.tsx =====
+import { Card, Empty, Skeleton, Typography } from 'antd';
+import { useState } from 'react';
+import { Link } from 'react-router-dom';
+import { LoadError } from '@/components/ui/LoadError';
+import { PillGroup } from '@/features/dashboard/components/PillGroup';
+import { STAGE_FILTERS, STAGE_META } from '@/features/dashboard/constants';
+import { formatItemCount, formatMinutesAgo } from '@/features/dashboard/format';
+import type { CurrentOrder, CurrentOrderStage } from '@/features/dashboard/types';
+import { formatCurrency } from '@/utils/number-formats';
+
+type StageFilter = 'ALL' | CurrentOrderStage;
+
+function OrderRow({ order }: { order: CurrentOrder }) {
+  const stage = STAGE_META.get(order.stage) ?? { label: order.stage, tone: 'neutral' as const };
+
+  return (
+    <li>
+      <Link className="dash-order" to="/orders">
+        <div className="dash-order__main">
+          <div className="dash-order__title">
+            #{order.orderNumber} · {order.customerName}
+          </div>
+          <div className="dash-order__meta">
+            {order.outletName} · {formatItemCount(order.itemCount)} · {formatCurrency(order.amount)}
+          </div>
+          {order.hasNoOperator && <span className="dash-chip dash-tone--negative">No operator</span>}
+          {order.delayedMinutes !== undefined && (
+            <span className="dash-chip dash-tone--negative">Delayed {order.delayedMinutes} min</span>
+          )}
+        </div>
+        <div className="dash-order__side">
+          <span className={`dash-chip dash-tone--${stage.tone}`}>{stage.label}</span>
+          <span className="dash-order__time">{formatMinutesAgo(order.minutesAgo)}</span>
+        </div>
+      </Link>
+    </li>
+  );
+}
+
+type CurrentOrdersCardProps = {
+  orders?: CurrentOrder[];
+  isLoading: boolean;
+  isError: boolean;
+  onRetry: () => void;
+};
+
+/** Today's active orders, with a quick filter by stage. */
+export function CurrentOrdersCard({ orders, isLoading, isError, onRetry }: CurrentOrdersCardProps) {
+  const [stageFilter, setStageFilter] = useState<StageFilter>('ALL');
+
+  const visibleOrders = (orders ?? []).filter((order) => stageFilter === 'ALL' || order.stage === stageFilter);
+
+  return (
+    <Card className="dash-card dash-orders" variant="borderless">
+      <div className="dash-orders__head">
+        <div className="dash-card__head">
+          <div>
+            <Typography.Title className="dash-card__title" level={2}>
+              Current orders
+            </Typography.Title>
+            <Typography.Text className="dash-card__subtitle">Late and unassigned orders show first</Typography.Text>
+          </div>
+          <span className="dash-live">
+            <span aria-hidden="true" className="dash-live__dot" />
+            Live
+          </span>
+        </div>
+        <PillGroup
+          label="Filter orders by stage"
+          options={STAGE_FILTERS}
+          value={stageFilter}
+          onChange={setStageFilter}
+        />
+      </div>
+
+      {isError ? (
+        <div className="dash-orders__state">
+          <LoadError what="current orders" onRetry={onRetry} />
+        </div>
+      ) : isLoading ? (
+        <div className="dash-orders__state">
+          <Skeleton active paragraph={{ rows: 6 }} title={false} />
+        </div>
+      ) : visibleOrders.length === 0 ? (
+        <Empty
+          className="dash-orders__state"
+          description="No orders in this stage"
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+        />
+      ) : (
+        <ul className="dash-orders__list">
+          {visibleOrders.map((order) => (
+            <OrderRow key={order.id} order={order} />
+          ))}
+        </ul>
+      )}
+
+      <Link className="dash-orders__all" to="/orders">
+        View all orders →
+      </Link>
+    </Card>
+  );
+}
+===== END FILE: src/features/dashboard/components/CurrentOrdersCard.tsx =====
+
+===== FILE: src/features/dashboard/components/DashboardHeader.tsx =====
+import { BellOutlined, SearchOutlined } from '@ant-design/icons';
+import { Button, Input, Popover, Typography } from 'antd';
+import dayjs from 'dayjs';
+import { useState } from 'react';
+import { createSearchParams, useNavigate } from 'react-router-dom';
+import { PillGroup } from '@/features/dashboard/components/PillGroup';
+import { RANGE_OPTIONS } from '@/features/dashboard/constants';
+import type { DashboardRange } from '@/features/dashboard/types';
+
+const MAX_SEARCH_LENGTH = 100;
+
+type DashboardHeaderProps = {
+  /** ISO date-time of the last refresh, if the numbers are loaded */
+  updatedAt?: string;
+  range: DashboardRange;
+  onRangeChange: (range: DashboardRange) => void;
+};
+
+export function DashboardHeader({ updatedAt, range, onRangeChange }: DashboardHeaderProps) {
+  const navigate = useNavigate();
+  const [search, setSearch] = useState('');
+
+  // For now the search opens the Orders page with the text filled in.
+  const submitSearch = () => {
+    const text = search.trim();
+    if (!text) return;
+    void navigate({ pathname: '/orders', search: createSearchParams({ search: text }).toString() });
+  };
+
+  return (
+    <header className="dash-header">
+      <div>
+        <Typography.Title className="dash-header__title" level={1}>
+          Dashboard
+        </Typography.Title>
+        {/* TODO: remove "sample data" when the dashboard API is connected. */}
+        <Typography.Text className="dash-header__subtitle">
+          {updatedAt ? `Updated ${dayjs(updatedAt).format('h:mm A')}` : 'Updating…'} · sample data
+        </Typography.Text>
+      </div>
+
+      <div className="dash-header__tools">
+        <Input
+          allowClear
+          aria-label="Search orders, users, outlets"
+          className="dash-header__search"
+          maxLength={MAX_SEARCH_LENGTH}
+          onChange={(event) => setSearch(event.target.value)}
+          onPressEnter={submitSearch}
+          placeholder="Search orders, users, outlets"
+          prefix={<SearchOutlined />}
+          value={search}
+        />
+        <PillGroup label="Time range" options={RANGE_OPTIONS} value={range} onChange={onRangeChange} />
+        {/* TODO: show real notifications when the notifications API is ready. */}
+        <Popover content="No new notifications" placement="bottomRight" trigger="click">
+          <Button aria-label="Notifications" className="dash-header__bell" icon={<BellOutlined />} />
+        </Popover>
+      </div>
+    </header>
+  );
+}
+===== END FILE: src/features/dashboard/components/DashboardHeader.tsx =====
+
+===== FILE: src/features/dashboard/components/KpiCard.tsx =====
+import { CaretDownFilled, CaretUpFilled } from '@ant-design/icons';
+import { Card } from 'antd';
+import type { Change } from '@/features/dashboard/format';
+
+type KpiCardProps = {
+  label: string;
+  /** Already formatted, for example '₹48,260' */
+  value: string;
+  /** Small text after the value, for example '· 7.9%' */
+  valueNote?: string;
+  change: Change;
+  /** Is a rise good news? (More revenue: yes. More cancelled orders: no.) Decides the green or red color. */
+  higherIsBetter: boolean;
+  comparedTo: string;
+};
+
+/** One number with its change against the previous period. */
+export function KpiCard({ label, value, valueNote, change, higherIsBetter, comparedTo }: KpiCardProps) {
+  const isGood = change.direction === 'flat' ? undefined : (change.direction === 'up') === higherIsBetter;
+  const tone = isGood === undefined ? 'neutral' : isGood ? 'positive' : 'negative';
+  const directionWord = change.direction === 'up' ? 'Up' : change.direction === 'down' ? 'Down' : 'No change';
+
+  return (
+    <Card className="dash-card dash-kpi" variant="borderless">
+      <div className="dash-kpi__label">{label}</div>
+      <div className="dash-kpi__value">
+        {value}
+        {valueNote && <span className="dash-kpi__note">{valueNote}</span>}
+      </div>
+      <div className="dash-kpi__change">
+        <span className={`dash-chip dash-tone--${tone}`}>
+          {change.direction === 'up' && <CaretUpFilled aria-hidden="true" />}
+          {change.direction === 'down' && <CaretDownFilled aria-hidden="true" />}
+          <span className="dash-visually-hidden">{directionWord} </span>
+          {change.text}
+        </span>
+        <span className="dash-kpi__compared">{comparedTo}</span>
+      </div>
+    </Card>
+  );
+}
+===== END FILE: src/features/dashboard/components/KpiCard.tsx =====
+
+===== FILE: src/features/dashboard/components/NeedsAttentionCard.tsx =====
+import { ArrowRightOutlined } from '@ant-design/icons';
+import { Card, Typography } from 'antd';
+import { Link } from 'react-router-dom';
+import type { Tone } from '@/features/dashboard/constants';
+import type { DashboardSummary } from '@/features/dashboard/types';
+import { formatCount } from '@/utils/number-formats';
+
+type AttentionRow = { label: string; count: number; tone: Tone; href: string };
+
+type NeedsAttentionCardProps = {
+  attention: DashboardSummary['attention'];
+};
+
+/** The things to fix first. Each row opens the page where it can be fixed. */
+export function NeedsAttentionCard({ attention }: NeedsAttentionCardProps) {
+  const rows: AttentionRow[] = [
+    { label: 'Orders with no operator', count: attention.ordersWithoutOperator, tone: 'negative', href: '/orders' },
+    { label: 'Orders delayed over 30 min', count: attention.ordersDelayed, tone: 'negative', href: '/orders' },
+    { label: 'Failed payments', count: attention.failedPayments, tone: 'warning', href: '/orders' },
+    { label: 'Outlet offline', count: attention.outletsOffline, tone: 'warning', href: '/outlets' },
+    { label: 'Coupons expiring in 48 hours', count: attention.couponsExpiring, tone: 'neutral', href: '/coupons' },
+  ];
+
+  return (
+    <Card className="dash-card dash-attention" variant="borderless">
+      <div className="dash-card__head">
+        <div>
+          <Typography.Title className="dash-card__title" level={2}>
+            Needs attention
+          </Typography.Title>
+          <Typography.Text className="dash-card__subtitle">Fix these first</Typography.Text>
+        </div>
+      </div>
+
+      <ul className="dash-attention__list">
+        {rows.map((row) => (
+          <li key={row.label}>
+            <Link className="dash-attention__row" to={row.href}>
+              <span className={`dash-attention__count dash-tone--${row.tone}`}>{formatCount(row.count)}</span>
+              <span className="dash-attention__label">{row.label}</span>
+              <ArrowRightOutlined aria-hidden="true" className="dash-attention__arrow" />
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  );
+}
+===== END FILE: src/features/dashboard/components/NeedsAttentionCard.tsx =====
+
+===== FILE: src/features/dashboard/components/PillGroup.tsx =====
+type PillOption<Value extends string> = { value: Value; label: string };
+
+type PillGroupProps<Value extends string> = {
+  /** Read out by screen readers, for example "Time range" */
+  label: string;
+  options: PillOption<Value>[];
+  value: Value;
+  onChange: (value: Value) => void;
+};
+
+/** A row of round buttons where exactly one is selected (time range, order filter). */
+export function PillGroup<Value extends string>({ label, options, value, onChange }: PillGroupProps<Value>) {
+  return (
+    <div className="dash-pills" role="group" aria-label={label}>
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          className="dash-pill"
+          aria-pressed={option.value === value}
+          onClick={() => onChange(option.value)}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+===== END FILE: src/features/dashboard/components/PillGroup.tsx =====
+
+===== FILE: src/features/dashboard/components/WorkspaceGrid.tsx =====
+import {
+  AppstoreOutlined,
+  GiftOutlined,
+  ShopOutlined,
+  ShoppingCartOutlined,
+  TagsOutlined,
+  TeamOutlined,
+  UserOutlined,
+  WalletOutlined,
+} from '@ant-design/icons';
+import { Card, Typography } from 'antd';
+import type { ReactNode } from 'react';
+import { Link } from 'react-router-dom';
+import type { Tone } from '@/features/dashboard/constants';
+import type { DashboardSummary } from '@/features/dashboard/types';
+import { formatCount } from '@/utils/number-formats';
+
+type Tile = {
+  label: string;
+  /** Already formatted. A dash while there is no data. */
+  value: string;
+  description: string;
+  icon: ReactNode;
+  tone: Tone;
+  href: string;
+};
+
+type WorkspaceGridProps = {
+  workspace: DashboardSummary['workspace'];
+};
+
+/** Counts of everything in the workspace. Each tile opens its module. */
+export function WorkspaceGrid({ workspace }: WorkspaceGridProps) {
+  const tiles: Tile[] = [
+    {
+      label: 'Outlets',
+      value: formatCount(workspace.outlets),
+      description: `${formatCount(workspace.outletsOpen)} open now`,
+      icon: <ShopOutlined />,
+      tone: 'positive',
+      href: '/outlets',
+    },
+    {
+      label: 'Operators',
+      value: formatCount(workspace.operators),
+      description: `${formatCount(workspace.operatorsOnline)} online now`,
+      icon: <TeamOutlined />,
+      tone: 'pink',
+      href: '/operators',
+    },
+    {
+      label: 'Users',
+      value: formatCount(workspace.users),
+      description: `+${formatCount(workspace.usersThisWeek)} this week`,
+      icon: <UserOutlined />,
+      tone: 'teal',
+      href: '/users',
+    },
+    {
+      label: 'Coupons',
+      value: formatCount(workspace.coupons),
+      description: `${formatCount(workspace.couponsActive)} active`,
+      icon: <GiftOutlined />,
+      tone: 'purple',
+      href: '/coupons',
+    },
+    {
+      label: 'Orders',
+      value: formatCount(workspace.orders),
+      description: 'All time',
+      icon: <ShoppingCartOutlined />,
+      tone: 'orange',
+      href: '/orders',
+    },
+    {
+      label: 'Catalogs',
+      value: formatCount(workspace.catalogs),
+      description: 'Products and menus',
+      icon: <TagsOutlined />,
+      tone: 'warning',
+      href: '/catalogs',
+    },
+    {
+      label: 'Applications',
+      value: formatCount(workspace.applications),
+      description: 'Manage your apps',
+      icon: <AppstoreOutlined />,
+      tone: 'info',
+      href: '/apps',
+    },
+    {
+      label: 'Wallet bonus credits',
+      value: workspace.walletBonusCredits === undefined ? '–' : formatCount(workspace.walletBonusCredits),
+      description: 'No balance data yet',
+      icon: <WalletOutlined />,
+      tone: 'neutral',
+      // The Wallet Bonus Credits page is hidden for now (see modules.tsx), so this tile is not a link yet.
+      href: '',
+    },
+  ];
+
+  return (
+    <section aria-labelledby="dash-workspace-title" className="dash-workspace">
+      <Typography.Title className="dash-section-title" id="dash-workspace-title" level={2}>
+        Your workspace
+      </Typography.Title>
+      <div className="dash-workspace__grid">
+        {tiles.map((tile) => {
+          const content = (
+            <Card className="dash-card dash-tile" variant="borderless">
+              <span aria-hidden="true" className={`dash-tile__icon dash-tone--${tile.tone}`}>
+                {tile.icon}
+              </span>
+              <div>
+                <div className="dash-tile__value">{tile.value}</div>
+                <div className="dash-tile__label">{tile.label}</div>
+                <div className="dash-tile__description">{tile.description}</div>
+              </div>
+            </Card>
+          );
+
+          return tile.href ? (
+            <Link className="dash-tile-link" key={tile.label} to={tile.href}>
+              {content}
+            </Link>
+          ) : (
+            <div className="dash-tile-link" key={tile.label}>
+              {content}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+===== END FILE: src/features/dashboard/components/WorkspaceGrid.tsx =====
+
+===== FILE: src/features/dashboard/constants.ts =====
+import type { CurrentOrderStage, DashboardRange } from '@/features/dashboard/types';
+
+export const RANGE_OPTIONS: { value: DashboardRange; label: string; periodLabel: string; comparedTo: string }[] = [
+  { value: 'today', label: 'Today', periodLabel: 'today', comparedTo: 'vs yesterday' },
+  { value: '7days', label: '7 days', periodLabel: 'last 7 days', comparedTo: 'vs previous 7 days' },
+  { value: '30days', label: '30 days', periodLabel: 'last 30 days', comparedTo: 'vs previous 30 days' },
+];
+
+/** Colors for the chips and icon tiles. A tone is a set of design tokens: see `colors` in `theme/tokens.ts`. */
+export type Tone = 'positive' | 'negative' | 'warning' | 'info' | 'purple' | 'teal' | 'pink' | 'orange' | 'neutral';
+
+export const STAGE_META = new Map<CurrentOrderStage, { label: string; tone: Tone }>([
+  ['PENDING', { label: 'Pending', tone: 'warning' }],
+  ['PREPARING', { label: 'Preparing', tone: 'info' }],
+  ['ON_THE_WAY', { label: 'On the way', tone: 'purple' }],
+  ['DELIVERED', { label: 'Delivered', tone: 'positive' }],
+]);
+
+/** The stages that can be picked as a filter on the Current orders card. */
+export const STAGE_FILTERS: { value: 'ALL' | CurrentOrderStage; label: string }[] = [
+  { value: 'ALL', label: 'All' },
+  { value: 'PENDING', label: 'Pending' },
+  { value: 'PREPARING', label: 'Preparing' },
+  { value: 'ON_THE_WAY', label: 'On the way' },
+];
+===== END FILE: src/features/dashboard/constants.ts =====
+
+===== FILE: src/features/dashboard/format.ts =====
+import { formatCount, formatPercent } from '@/utils/number-formats';
+import type { ComparedValue } from '@/features/dashboard/types';
+
+/** 2 → '2 min ago', 75 → '1 h 15 min ago' */
+export function formatMinutesAgo(minutes: number): string {
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours} h ago` : `${hours} h ${rest} min ago`;
+}
+
+/** 1 → '1 item', 3 → '3 items' */
+export function formatItemCount(count: number): string {
+  return `${formatCount(count)} ${count === 1 ? 'item' : 'items'}`;
+}
+
+export type Change = {
+  /** '12%' or '1' */
+  text: string;
+  direction: 'up' | 'down' | 'flat';
+};
+
+/** Change shown as a percentage of the previous value: 48260 vs 43090 → '12%' up. */
+export function getPercentChange({ current, previous }: ComparedValue): Change {
+  if (previous === 0 || current === previous) return { text: '0%', direction: 'flat' };
+  const ratio = (current - previous) / previous;
+  return { text: formatPercent(Math.abs(ratio)), direction: ratio > 0 ? 'up' : 'down' };
+}
+
+/** Change shown as a plain number: 3 vs 2 → '1' up. Used for small counts such as cancelled orders. */
+export function getCountChange({ current, previous }: ComparedValue): Change {
+  const difference = current - previous;
+  if (difference === 0) return { text: '0', direction: 'flat' };
+  return { text: formatCount(Math.abs(difference)), direction: difference > 0 ? 'up' : 'down' };
+}
+
+/** 3 of 38 → '7.9%' (one decimal, so small shares stay readable) */
+export function formatShare(part: number, total: number): string {
+  if (total === 0) return '0%';
+  return `${((part / total) * 100).toFixed(1)}%`;
+}
+===== END FILE: src/features/dashboard/format.ts =====
+
+===== FILE: src/features/dashboard/pages/DashboardPage.css =====
+/* All sizes and colors come from src/theme/tokens.ts via CSS variables. */
+
+/*
+ * The page adapts to the space it gets (the sidebar can be open or closed), not to the screen width.
+ *  - dash-page: one column, or two columns (numbers + Current orders) when there is room
+ *  - dash-main: how many cards sit side by side inside the left column
+ */
+.dash-page {
+  container-name: dash-page;
+  container-type: inline-size;
+  display: grid;
+  gap: 20px;
+  margin: 0 auto;
+  max-width: 1600px;
+  width: 100%;
+}
+
+.dash-layout {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@container dash-page (min-width: 1100px) {
+  .dash-layout {
+    align-items: start;
+    grid-template-columns: minmax(0, 1fr) 380px;
+  }
+}
+
+.dash-main {
+  container-name: dash-main;
+  container-type: inline-size;
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+
+/* ---------- Header ---------- */
+
+.dash-header {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.dash-header__title.ant-typography {
+  color: var(--color-text-strong);
+  font-size: var(--font-size-page-title);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--letter-spacing-heading);
+  line-height: var(--line-height-heading);
+  margin: 0;
+}
+
+.dash-header__subtitle.ant-typography {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-compact);
+}
+
+.dash-header__tools {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dash-header__search.ant-input-affix-wrapper {
+  border-color: var(--color-border);
+  border-radius: var(--radius-large);
+  height: 40px;
+  width: 260px;
+}
+
+.dash-header__bell.ant-btn {
+  border-color: var(--color-border);
+  border-radius: var(--radius-large);
+  color: var(--color-text-muted);
+  height: 40px;
+  width: 40px;
+}
+
+/* ---------- Pills (time range, order stage) ---------- */
+
+.dash-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dash-pill {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 100px;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--font-size-compact);
+  font-weight: var(--font-weight-medium);
+  height: 32px;
+  padding: 0 14px;
+  transition:
+    background-color 0.2s,
+    border-color 0.2s,
+    color 0.2s;
+}
+
+.dash-pill:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.dash-pill[aria-pressed='true'] {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-on-primary);
+}
+
+/* ---------- Shared pieces ---------- */
+
+.dash-card.ant-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-large);
+  box-shadow: none;
+}
+
+.dash-card__head {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.dash-card__title.ant-typography,
+.dash-section-title.ant-typography {
+  color: var(--color-text-strong);
+  font-size: var(--font-size-large);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-compact);
+  margin: 0;
+}
+
+.dash-card__subtitle.ant-typography {
+  color: var(--color-text-muted);
+  display: block;
+  font-size: var(--font-size-compact);
+  margin-top: 4px;
+}
+
+/* Small rounded label. Pick its colors with a dash-tone class. */
+.dash-chip {
+  align-items: center;
+  border-radius: 100px;
+  display: inline-flex;
+  font-size: var(--font-size-small);
+  font-weight: var(--font-weight-medium);
+  gap: 4px;
+  line-height: var(--line-height-base);
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+
+.dash-tone--positive {
+  background: var(--color-positive-soft);
+  color: var(--color-positive);
+}
+
+.dash-tone--negative {
+  background: var(--color-negative-soft);
+  color: var(--color-negative);
+}
+
+.dash-tone--warning {
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+}
+
+.dash-tone--info {
+  background: var(--color-info-soft);
+  color: var(--color-info);
+}
+
+.dash-tone--purple {
+  background: var(--color-purple-soft);
+  color: var(--color-purple);
+}
+
+.dash-tone--teal {
+  background: var(--color-teal-soft);
+  color: var(--color-teal);
+}
+
+.dash-tone--pink {
+  background: var(--color-pink-soft);
+  color: var(--color-pink);
+}
+
+.dash-tone--orange {
+  background: var(--color-orange-soft);
+  color: var(--color-orange);
+}
+
+.dash-tone--neutral {
+  background: var(--color-neutral-soft);
+  color: var(--color-neutral);
+}
+
+.dash-sample-tag.ant-tag {
+  background: var(--color-warning-soft);
+  border: 0;
+  border-radius: 100px;
+  color: var(--color-warning);
+  font-size: var(--font-size-tiny);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--letter-spacing-badge);
+  margin: 0;
+}
+
+/* Text for screen readers only */
+.dash-visually-hidden {
+  block-size: 1px;
+  clip-path: inset(50%);
+  inline-size: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+}
+
+/* ---------- KPI cards ---------- */
+
+.dash-kpis {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@container dash-main (min-width: 640px) {
+  .dash-kpis {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.dash-kpi .ant-card-body {
+  padding: 16px 18px;
+}
+
+.dash-kpi__label {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-compact);
+  font-weight: var(--font-weight-medium);
+}
+
+.dash-kpi__value {
+  color: var(--color-text-strong);
+  font-size: var(--font-size-metric);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--letter-spacing-metric);
+  line-height: var(--line-height-compact);
+  margin-block: 6px 10px;
+}
+
+.dash-kpi__note {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-compact);
+  font-weight: var(--font-weight-regular);
+  letter-spacing: 0;
+  margin-inline-start: 6px;
+}
+
+.dash-kpi__change {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dash-kpi__compared {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-compact);
+}
+
+/* ---------- Order activity + Needs attention ---------- */
+
+.dash-insights {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@container dash-main (min-width: 700px) {
+  .dash-insights {
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  }
+}
+
+.dash-activity .ant-card-body,
+.dash-attention .ant-card-body {
+  padding: 20px;
+}
+
+.dash-activity__chart {
+  margin-top: 8px;
+}
+
+.dash-activity__chart svg {
+  display: block;
+}
+
+.dash-activity__area {
+  fill: color-mix(in srgb, var(--color-primary) 10%, transparent);
+}
+
+.dash-activity__line {
+  fill: none;
+  stroke: var(--color-primary);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.5;
+}
+
+.dash-activity__point {
+  fill: var(--color-surface);
+  stroke: var(--color-primary);
+  stroke-width: 2;
+}
+
+.dash-activity__day {
+  fill: var(--color-text-muted);
+  font-size: var(--font-size-small);
+}
+
+.dash-attention__list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.dash-attention__list li + li {
+  border-top: 1px solid var(--color-border);
+}
+
+.dash-attention__row {
+  align-items: center;
+  color: var(--color-text-strong);
+  display: flex;
+  gap: 12px;
+  padding: 12px 0;
+}
+
+.dash-attention__row:hover {
+  color: var(--color-primary);
+}
+
+.dash-attention__row:hover .dash-attention__arrow {
+  color: var(--color-primary);
+}
+
+.dash-attention__count {
+  border-radius: var(--radius-medium);
+  flex: 0 0 auto;
+  font-size: var(--font-size-compact);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-weight-bold);
+  min-width: 28px;
+  padding: 3px 6px;
+  text-align: center;
+}
+
+.dash-attention__label {
+  flex: 1 1 auto;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  min-width: 0;
+}
+
+.dash-attention__arrow {
+  color: var(--color-text-muted);
+  flex: 0 0 auto;
+  font-size: var(--font-size-compact);
+}
+
+/* ---------- Your workspace ---------- */
+
+.dash-workspace {
+  display: grid;
+  gap: 12px;
+}
+
+.dash-workspace__grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@container dash-main (min-width: 480px) {
+  .dash-workspace__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container dash-main (min-width: 640px) {
+  .dash-workspace__grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.dash-tile-link {
+  color: inherit;
+  display: block;
+  min-width: 0;
+}
+
+.dash-tile.ant-card {
+  height: 100%;
+  transition: border-color 0.2s;
+}
+
+a.dash-tile-link:hover .dash-tile.ant-card {
+  border-color: var(--color-primary);
+}
+
+.dash-tile .ant-card-body {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  padding: 14px;
+}
+
+.dash-tile__icon {
+  align-items: center;
+  border-radius: var(--radius-medium);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: var(--font-size-large);
+  height: 36px;
+  justify-content: center;
+  width: 36px;
+}
+
+.dash-tile__value {
+  color: var(--color-text-strong);
+  font-size: var(--font-size-title);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-compact);
+}
+
+.dash-tile__label {
+  color: var(--color-text-strong);
+  font-size: var(--font-size-compact);
+  font-weight: var(--font-weight-medium);
+  margin-top: 2px;
+}
+
+.dash-tile__description {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-compact);
+}
+
+/* ---------- Current orders ---------- */
+
+.dash-orders .ant-card-body {
+  padding: 0;
+}
+
+.dash-orders__head {
+  border-bottom: 1px solid var(--color-border);
+  display: grid;
+  gap: 14px;
+  padding: 20px;
+}
+
+.dash-live {
+  align-items: center;
+  background: var(--color-positive-soft);
+  border-radius: 100px;
+  color: var(--color-positive);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: var(--font-size-small);
+  font-weight: var(--font-weight-medium);
+  gap: 6px;
+  padding: 2px 10px;
+}
+
+.dash-live__dot {
+  background: var(--color-positive);
+  border-radius: 50%;
+  height: 6px;
+  width: 6px;
+}
+
+.dash-orders__state {
+  padding: 24px 20px;
+}
+
+.dash-orders__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.dash-orders__list li + li {
+  border-top: 1px solid var(--color-border);
+}
+
+.dash-order {
+  align-items: flex-start;
+  color: var(--color-text-strong);
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 14px 20px;
+}
+
+.dash-order:hover {
+  background: var(--color-menu-item-hover);
+  color: var(--color-text-strong);
+}
+
+.dash-order__main {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+  min-width: 0;
+}
+
+.dash-order__title {
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+}
+
+.dash-order__meta {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-compact);
+}
+
+.dash-order__side {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 6px;
+  justify-items: end;
+}
+
+.dash-order__time {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-compact);
+}
+
+.dash-orders__all {
+  border-top: 1px solid var(--color-border);
+  color: var(--color-primary);
+  display: block;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  padding: 14px 20px;
+  text-align: center;
+}
+
+@media (max-width: 767px) {
+  .dash-header__search.ant-input-affix-wrapper {
+    width: 100%;
+  }
+
+  .dash-header__tools {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dash-pill,
+  .dash-tile.ant-card {
+    transition: none;
+  }
+}
+===== END FILE: src/features/dashboard/pages/DashboardPage.css =====
+
+===== FILE: src/features/dashboard/pages/DashboardPage.tsx =====
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { Skeleton } from 'antd';
+import { useState } from 'react';
+import { LoadError } from '@/components/ui/LoadError';
+import { dashboardQueryKeys } from '@/features/dashboard/api/query-keys';
+import { getDashboardSummary, listCurrentOrders } from '@/features/dashboard/api/dashboard-api';
+import { ActivityChart } from '@/features/dashboard/components/ActivityChart';
+import { CurrentOrdersCard } from '@/features/dashboard/components/CurrentOrdersCard';
+import { DashboardHeader } from '@/features/dashboard/components/DashboardHeader';
+import { KpiCard } from '@/features/dashboard/components/KpiCard';
+import { NeedsAttentionCard } from '@/features/dashboard/components/NeedsAttentionCard';
+import { WorkspaceGrid } from '@/features/dashboard/components/WorkspaceGrid';
+import { RANGE_OPTIONS } from '@/features/dashboard/constants';
+import { formatShare, getCountChange, getPercentChange } from '@/features/dashboard/format';
+import type { DashboardRange } from '@/features/dashboard/types';
+import { formatCount, formatCurrency } from '@/utils/number-formats';
+import './DashboardPage.css';
+
+export default function DashboardPage() {
+  const [range, setRange] = useState<DashboardRange>('today');
+
+  // The old numbers stay on screen while the new period loads, so the page does not flash.
+  const summaryQuery = useQuery({
+    queryKey: dashboardQueryKeys.summary(range),
+    queryFn: () => getDashboardSummary(range),
+    placeholderData: keepPreviousData,
+  });
+  const ordersQuery = useQuery({
+    queryKey: dashboardQueryKeys.currentOrders,
+    queryFn: listCurrentOrders,
+  });
+
+  const summary = summaryQuery.data;
+  const rangeOption = RANGE_OPTIONS.find((option) => option.value === range);
+  const comparedTo = rangeOption?.comparedTo ?? '';
+  const periodLabel = rangeOption?.periodLabel ?? '';
+
+  return (
+    <div className="dash-page">
+      <DashboardHeader range={range} updatedAt={summary?.updatedAt} onRangeChange={setRange} />
+
+      <div className="dash-layout">
+        <div className="dash-main">
+          {summaryQuery.isError ? (
+            <LoadError what="dashboard numbers" onRetry={() => void summaryQuery.refetch()} />
+          ) : summary ? (
+            <>
+              <div className="dash-kpis">
+                <KpiCard
+                  label={`Revenue ${periodLabel}`}
+                  value={formatCurrency(summary.revenue.current)}
+                  change={getPercentChange(summary.revenue)}
+                  higherIsBetter
+                  comparedTo={comparedTo}
+                />
+                <KpiCard
+                  label={`Orders ${periodLabel}`}
+                  value={formatCount(summary.orders.current)}
+                  change={getPercentChange(summary.orders)}
+                  higherIsBetter
+                  comparedTo={comparedTo}
+                />
+                <KpiCard
+                  label="Average order value"
+                  value={formatCurrency(summary.averageOrderValue.current)}
+                  change={getPercentChange(summary.averageOrderValue)}
+                  higherIsBetter
+                  comparedTo={comparedTo}
+                />
+                <KpiCard
+                  label="Cancelled orders"
+                  value={formatCount(summary.cancelledOrders.current)}
+                  valueNote={`· ${formatShare(summary.cancelledOrders.current, summary.orders.current)}`}
+                  change={getCountChange(summary.cancelledOrders)}
+                  higherIsBetter={false}
+                  comparedTo={comparedTo}
+                />
+              </div>
+
+              <div className="dash-insights">
+                <ActivityChart weeklyOrders={summary.weeklyOrders} />
+                <NeedsAttentionCard attention={summary.attention} />
+              </div>
+
+              <WorkspaceGrid workspace={summary.workspace} />
+            </>
+          ) : (
+            <Skeleton active paragraph={{ rows: 10 }} />
+          )}
+        </div>
+
+        <CurrentOrdersCard
+          orders={ordersQuery.data}
+          isLoading={ordersQuery.isPending}
+          isError={ordersQuery.isError}
+          onRetry={() => void ordersQuery.refetch()}
+        />
+      </div>
+    </div>
+  );
+}
+===== END FILE: src/features/dashboard/pages/DashboardPage.tsx =====
+
+===== FILE: src/features/dashboard/types.ts =====
+export type DashboardRange = 'today' | '7days' | '30days';
+
+/** A number for the chosen period and for the period before it (used for the "vs yesterday" change). */
+export type ComparedValue = {
+  current: number;
+  previous: number;
+};
+
+export type DashboardSummary = {
+  /** ISO date-time of the last refresh */
+  updatedAt: string;
+  revenue: ComparedValue;
+  orders: ComparedValue;
+  averageOrderValue: ComparedValue;
+  cancelledOrders: ComparedValue;
+  /** Orders per day, Monday to Sunday */
+  weeklyOrders: number[];
+  attention: {
+    ordersWithoutOperator: number;
+    ordersDelayed: number;
+    failedPayments: number;
+    outletsOffline: number;
+    couponsExpiring: number;
+  };
+  workspace: {
+    outlets: number;
+    outletsOpen: number;
+    operators: number;
+    operatorsOnline: number;
+    users: number;
+    usersThisWeek: number;
+    coupons: number;
+    couponsActive: number;
+    orders: number;
+    catalogs: number;
+    applications: number;
+    /** Missing until the wallet bonus API exists */
+    walletBonusCredits?: number;
+  };
+};
+
+/** The stages shown on the dashboard. The backend order statuses map onto these. */
+export type CurrentOrderStage = 'PENDING' | 'PREPARING' | 'ON_THE_WAY' | 'DELIVERED';
+
+export type CurrentOrder = {
+  id: string;
+  /** Shown with a # in front, for example 1042 */
+  orderNumber: string;
+  customerName: string;
+  outletName: string;
+  itemCount: number;
+  amount: number;
+  stage: CurrentOrderStage;
+  minutesAgo: number;
+  /** Problems to fix first */
+  hasNoOperator?: boolean;
+  delayedMinutes?: number;
+};
+===== END FILE: src/features/dashboard/types.ts =====
+
