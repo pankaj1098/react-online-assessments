@@ -1,4 +1,4 @@
-ABIS PRO ADMIN CONSOLE - SETTINGS: GOLD / SILVER / PLATINUM TIER CARDS (3 files)
+ABIS PRO ADMIN CONSOLE - SETTINGS: GOLD / SILVER / PLATINUM TIER CARDS SIDE BY SIDE (3 files)
 ======================================================================
 Apply from the project root: node apply-bundle.mjs tier-cards-bundle.txt   (add --dry-run first)
 
@@ -136,21 +136,7 @@ export const sidebar = {
 
 ===== FILE: src/features/settings/components/EarningPointsTab.tsx =====
 import { CrownOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
-import {
-  Button,
-  Card,
-  Col,
-  Collapse,
-  DatePicker,
-  Form,
-  Input,
-  InputNumber,
-  Popconfirm,
-  Row,
-  Tag,
-  Typography,
-} from 'antd';
-import { useState } from 'react';
+import { Button, Card, Col, DatePicker, Form, Input, InputNumber, Popconfirm, Row, Tag, Typography } from 'antd';
 import { FormSection } from '@/components/ui/PageLayout';
 import { SwitchCard } from '@/components/ui/SwitchCard';
 import { SettingsForm } from '@/features/settings/components/SettingsForm';
@@ -247,17 +233,17 @@ function TierFields({ index }: { index: number }) {
   return (
     <>
       <Row gutter={16}>
-        <Col xs={24} sm={12} lg={6}>
+        <Col span={24}>
           <Form.Item label="Name" name={[index, 'name']} required rules={[zodRule(fields.tierName)]}>
             <Input placeholder="e.g. Gold" maxLength={40} />
           </Form.Item>
         </Col>
-        <Col xs={24} sm={12} lg={6}>
+        <Col span={12}>
           <Form.Item label="Min points" name={[index, 'minPoints']} required rules={[zodRule(fields.tierMinPoints)]}>
             <InputNumber min={0} precision={0} style={{ width: '100%' }} />
           </Form.Item>
         </Col>
-        <Col xs={24} sm={12} lg={6}>
+        <Col span={12}>
           <Form.Item
             label="Earn multiplier"
             name={[index, 'earnMultiplier']}
@@ -268,7 +254,7 @@ function TierFields({ index }: { index: number }) {
             <InputNumber min={1} max={10} step={0.1} suffix="×" style={{ width: '100%' }} />
           </Form.Item>
         </Col>
-        <Col xs={24} sm={12} lg={6}>
+        <Col span={24}>
           <Form.Item
             label="Free delivery above"
             name={[index, 'freeDeliveryMin']}
@@ -329,7 +315,7 @@ function getTierCardClass(name: unknown): string {
   return metal ? `tier-card ${metal[1]}` : 'tier-card';
 }
 
-/** The line at the top of a tier card: its name, where it starts, and whether it is the base tier. */
+/** The top of a tier card: its name, where it starts, and whether it is the base tier. */
 function TierHeader({ index }: { index: number }) {
   const form = Form.useFormInstance<EarningPointsFormInput>();
   const name: unknown = Form.useWatch(['tiers', index, 'name'], form);
@@ -337,20 +323,24 @@ function TierHeader({ index }: { index: number }) {
   const multiplier: unknown = Form.useWatch(['tiers', index, 'earnMultiplier'], form);
   return (
     <span className="tier-header">
-      <span className="tier-header__badge">
-        <CrownOutlined aria-hidden="true" />
+      <span className="tier-header__title">
+        <span className="tier-header__badge">
+          <CrownOutlined aria-hidden="true" />
+        </span>
+        <span className="tier-header__name">{typeof name === 'string' && name.trim() ? name : 'New tier'}</span>
+        {minPoints === 0 && <Tag color="blue">Base tier</Tag>}
       </span>
-      <span className="tier-header__name">{typeof name === 'string' && name.trim() ? name : 'New tier'}</span>
-      {typeof minPoints === 'number' && <span className="settings-muted">from {formatCount(minPoints)} points</span>}
-      {typeof multiplier === 'number' && <span className="settings-muted">· {multiplier}× birthday points</span>}
-      {minPoints === 0 && <Tag color="blue">Base tier</Tag>}
+      <span className="tier-header__meta">
+        {typeof minPoints === 'number' && `from ${formatCount(minPoints)} points`}
+        {typeof multiplier === 'number' && ` · ${multiplier}× birthday points`}
+      </span>
     </span>
   );
 }
 
+/** The tiers side by side, one card each. More tiers wrap onto the next row. */
 function TierList() {
   const form = Form.useFormInstance<EarningPointsFormInput>();
-  const [open, setOpen] = useState<string[]>([]);
   // Watching the tiers keeps each card's color in step with the name being typed.
   const tiers: unknown = Form.useWatch('tiers', { form, preserve: true });
   const tierRows = Array.isArray(tiers) ? (tiers as { name?: unknown }[]) : [];
@@ -359,49 +349,35 @@ function TierList() {
     <Form.List name="tiers">
       {(rows, { add, remove }, { errors }) => (
         <>
-          <Collapse
-            className="tier-list"
-            activeKey={open}
-            onChange={(keys) => setOpen([keys].flat().map(String))}
-            items={rows.map((row) => ({
-              key: String(row.name),
-              className: getTierCardClass(tierRows.at(row.name)?.name),
-              label: <TierHeader index={row.name} />,
-              forceRender: true,
-              extra: (
-                <Popconfirm
-                  title="Delete this tier?"
-                  description="It is removed when you save. The server refuses this if customers are in the tier."
-                  okText="Delete"
-                  okButtonProps={{ danger: true }}
-                  cancelText="Cancel"
-                  onConfirm={() => {
-                    setOpen([]);
-                    remove(row.name);
-                  }}
-                  onPopupClick={(event) => event.stopPropagation()}
-                >
-                  <Button
-                    size="small"
-                    type="text"
-                    danger
-                    icon={<DeleteOutlined />}
-                    onClick={(event) => event.stopPropagation()}
-                    aria-label="Delete tier"
-                  />
-                </Popconfirm>
-              ),
-              children: <TierFields index={row.name} />,
-            }))}
-          />
+          <div className="tier-list">
+            {rows.map((row) => (
+              <Card
+                key={row.key}
+                className={getTierCardClass(tierRows.at(row.name)?.name)}
+                variant="borderless"
+                title={<TierHeader index={row.name} />}
+                extra={
+                  <Popconfirm
+                    title="Delete this tier?"
+                    description="It is removed when you save. The server refuses this if customers are in the tier."
+                    okText="Delete"
+                    okButtonProps={{ danger: true }}
+                    cancelText="Cancel"
+                    onConfirm={() => remove(row.name)}
+                  >
+                    <Button size="small" type="text" danger icon={<DeleteOutlined />} aria-label="Delete tier" />
+                  </Popconfirm>
+                }
+              >
+                <TierFields index={row.name} />
+              </Card>
+            ))}
+          </div>
           <Form.ErrorList errors={errors} />
           <Button
             className="edit-list__add"
             icon={<PlusOutlined />}
-            onClick={() => {
-              add({ earnMultiplier: 1, benefits: '', discount: {}, cashback: {}, freeItem: {} });
-              setOpen([String(rows.length)]);
-            }}
+            onClick={() => add({ earnMultiplier: 1, benefits: '', discount: {}, cashback: {}, freeItem: {} })}
           >
             Add tier
           </Button>
@@ -755,68 +731,68 @@ export function EarningPointsTab({ onDirtyChange }: TabProps) {
 
 /* ---------- Loyalty tiers ---------- */
 
-/* Each tier is its own card, stacked with a gap. Gold, Silver and Platinum get their metal color. */
-.tier-list.ant-collapse {
-  background: transparent;
-  border: 0;
+/* The tiers sit side by side. A tier card is never narrower than 320px, so a small screen shows one per row. */
+.tier-list {
+  align-items: stretch;
   display: grid;
   gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
 }
 
-.tier-card.ant-collapse-item {
+.tier-card.ant-card {
   --tier-start: var(--color-table-header-bg);
   --tier-end: var(--color-border);
   --tier-text: inherit;
 
-  background: var(--color-surface);
   border: 1px solid var(--tier-end);
   border-radius: var(--radius-large);
   overflow: hidden;
 }
 
-.tier-card--gold.ant-collapse-item {
+.tier-card--gold.ant-card {
   --tier-start: var(--color-tier-gold-start);
   --tier-end: var(--color-tier-gold-end);
   --tier-text: var(--color-tier-gold-text);
 }
 
-.tier-card--silver.ant-collapse-item {
+.tier-card--silver.ant-card {
   --tier-start: var(--color-tier-silver-start);
   --tier-end: var(--color-tier-silver-end);
   --tier-text: var(--color-tier-silver-text);
 }
 
-.tier-card--platinum.ant-collapse-item {
+.tier-card--platinum.ant-card {
   --tier-start: var(--color-tier-platinum-start);
   --tier-end: var(--color-tier-platinum-end);
   --tier-text: var(--color-tier-platinum-text);
 }
 
-.tier-card > .ant-collapse-header {
-  align-items: center;
+.tier-card.ant-card > .ant-card-head {
   background: linear-gradient(100deg, var(--tier-start), var(--tier-end));
+  border-bottom: 1px solid var(--tier-end);
   color: var(--tier-text);
   padding: 14px 16px;
 }
 
-.tier-card > .ant-collapse-header .ant-collapse-expand-icon,
-.tier-card > .ant-collapse-header .settings-muted {
-  color: var(--tier-text);
+.tier-card.ant-card > .ant-card-head .ant-card-head-title {
+  overflow: visible;
+  white-space: normal;
 }
 
-.tier-card > .ant-collapse-panel {
-  border-top: 1px solid var(--tier-end);
-}
-
-.tier-card .ant-collapse-body {
+.tier-card.ant-card > .ant-card-body {
   padding: 20px 16px 8px;
 }
 
 .tier-header {
+  display: grid;
+  gap: 6px;
+}
+
+.tier-header__title {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 12px;
+  gap: 8px 10px;
 }
 
 .tier-header__badge {
@@ -834,10 +810,15 @@ export function EarningPointsTab({ onDirtyChange }: TabProps) {
   font-weight: var(--font-weight-bold);
 }
 
+.tier-header__meta {
+  font-size: var(--font-size-compact);
+  font-weight: var(--font-weight-regular);
+}
+
 .tier-perks {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .tier-perk.ant-card {
@@ -852,12 +833,6 @@ export function EarningPointsTab({ onDirtyChange }: TabProps) {
 
 .tier-perk .ant-form-item {
   margin-bottom: 12px;
-}
-
-@media (max-width: 1199px) {
-  .tier-perks {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 
 @media (max-width: 991px) {
