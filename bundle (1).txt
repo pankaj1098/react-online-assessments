@@ -1,0 +1,4414 @@
+# HANDOFF - IB Group Employee Portal (PHP -> React migration)
+
+## What this is
+Frontend migration of the company HR / employee self-service portal from PHP to React.
+Employees sign in, see applications, announcements and notifications, and raise requests (Gate Pass so far).
+Backend is a separate .NET Web API (login API is also .NET).
+
+## Stack
+React 19, JavaScript (JSX, no TypeScript), Vite 8 with React Compiler, Tailwind CSS 4 + shadcn/ui-style
+components (Radix), React Router 7 (lazy pages), TanStack Query, Zustand, Axios, React Hook Form + Zod,
+CASL (roles), ESLint (+ security plugin), Prettier, Husky, lint-staged, Commitlint, Vitest.
+
+## Rules the owner set
+- Font, colours and sizes must be changeable in ONE file: src/styles/theme.css (no hard-coded colours/fonts elsewhere).
+- Production ready: no console errors, no source maps in production, small JS bundle (lazy routes + vendor chunks),
+  browser tab never says "Vite" or "React", no default placeholders.
+- Internal login-only portal, so SEO is limited to: unique title + meta description per page, one h1 per page,
+  favicon, alt text, breadcrumbs, custom 404, share image, noindex. Skipped: canonical, structured data, LocalBusiness.
+
+## Current state (all verified: lint, Prettier, 18 tests, production build, Chrome check desktop + mobile)
+Done: login, dashboard (announcements, application tiles, notifications), gate pass (list, filters, create, edit, view),
+404 / access denied / crash pages, landing pages for other modules, sidebar (collapsible; drawer on mobile),
+top bar (notifications, profile menu), CASL role gating (Admin only for role "admin"), token refresh on 401.
+Dev runs on built-in mock data (VITE_USE_MOCK=true; any employee ID + password). Mock code is removed from production builds.
+
+## Assumptions still to confirm with the owner
+1. .NET endpoints and response shapes (guessed: /auth/login -> { accessToken, refreshToken, user { employeeId, name, roles } };
+   gate pass list GET /gate-passes?search&from&to&purpose&status&page&pageSize -> { items, total }).
+   Only src/config/endpoints.js, src/features/auth/api/auth.schemas.js and the *Api.js files need changing.
+2. Admin module visible only to role "admin" (src/lib/ability.js).
+3. Production site URL (set VITE_SITE_URL so the share image URL is absolute).
+4. Token storage: localStorage (current) vs sessionStorage.
+5. Logo and favicon files are a simple "IB" placeholder mark - replace with the real logo.
+6. Dashboard application tiles stay disabled until href is filled in src/config/applications.js.
+
+## Next steps
+Migrate remaining modules (HR, IT, Taxes, Ibigian Self Service, Admin, Corp Communication, Corporate Policies)
+following the gate-pass feature as the pattern: features/<name>/{api,hooks.js,pages,components}, register the page in
+src/app/router/routes.jsx, add it to src/config/modules.js, call usePageMeta('Title') and render one <h1>.
+
+## How to run
+npm install ; npm run dev ; npm run build ; npm run lint ; npm test
+IIS needs public/web.config (included) so client-side routes fall back to index.html.
+
+Binary assets are not in this bundle: public/*.png icons and og-image.png (placeholder brand images).
+
+--------------------------------------------------------------------------------
+FILES
+--------------------------------------------------------------------------------
+===== ./.editorconfig =====
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+===== ./.env.development =====
+VITE_API_BASE_URL=/api
+VITE_API_PROXY_TARGET=https://localhost:5001
+VITE_USE_MOCK=true
+VITE_SITE_URL=
+
+===== ./.env.example =====
+# Base URL of the .NET Web API. Use "/api" in dev together with VITE_API_PROXY_TARGET.
+VITE_API_BASE_URL=/api
+# Dev only: the origin Vite forwards "/api" to (avoids CORS while developing).
+VITE_API_PROXY_TARGET=https://localhost:5001
+# "true" serves built-in mock data (no backend needed). Must be "false" in production.
+VITE_USE_MOCK=false
+# Public origin of the portal, used only for the share-image URL (no trailing slash).
+VITE_SITE_URL=
+
+===== ./.env.production =====
+VITE_API_BASE_URL=/api
+VITE_USE_MOCK=false
+VITE_SITE_URL=
+
+===== ./.env.test =====
+VITE_API_BASE_URL=/api
+VITE_USE_MOCK=true
+VITE_SITE_URL=
+
+===== ./.gitignore =====
+node_modules
+dist
+coverage
+*.local
+*.log
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+
+===== ./.prettierignore =====
+dist
+coverage
+node_modules
+package-lock.json
+
+===== ./.prettierrc =====
+{
+  "semi": false,
+  "singleQuote": true,
+  "trailingComma": "all",
+  "printWidth": 100,
+  "plugins": ["prettier-plugin-tailwindcss"],
+  "tailwindStylesheet": "./src/styles/index.css"
+}
+
+===== ./README.md =====
+# IB Group Employee Portal
+
+HR and employee self-service portal (React migration of the PHP site). Login-only, internal.
+
+| Area         | Choice                                                                       |
+| ------------ | ---------------------------------------------------------------------------- |
+| Framework    | React 19, JavaScript (JSX), Vite 8, React Compiler                           |
+| UI           | Tailwind CSS 4 + shadcn/ui-style components (Radix primitives), lucide icons |
+| Routing      | React Router 7, every page lazy-loaded                                       |
+| Server state | TanStack Query                                                               |
+| Client state | Zustand (session, sidebar)                                                   |
+| HTTP         | Axios (token header, refresh-on-401, .NET `ProblemDetails` errors)           |
+| Forms        | React Hook Form + Zod                                                        |
+| Permissions  | CASL (module access by role)                                                 |
+| Quality      | ESLint (+ security plugin), Prettier, Husky, lint-staged, Commitlint, Vitest |
+
+## Getting started
+
+```bash
+npm install
+cp .env.example .env.local     # optional; .env.development already enables mock data
+npm run dev                    # http://localhost:5173
+```
+
+In development `VITE_USE_MOCK=true`, so you can sign in with any employee ID and any password
+without a backend. Use `locked` as the ID to see an error state.
+
+| Script            | What it does                                  |
+| ----------------- | --------------------------------------------- |
+| `npm run dev`     | Dev server with hot reload                    |
+| `npm run build`   | Type-check, then production build into `dist` |
+| `npm run preview` | Serve the production build locally            |
+| `npm run lint`    | ESLint                                        |
+| `npm run format`  | Prettier                                      |
+| `npm test`        | Unit and integration tests (Vitest)           |
+
+## Changing the look: one file
+
+Everything visual lives in **`src/styles/theme.css`**:
+
+- **Font**: change the `@import '@fontsource-variable/inter'` line and `--font-family-sans`
+- **Colours**: the `--primary`, `--sidebar`, `--background`... variables in `:root`
+- **Font size**: `--font-size-base` (all sizes are rem-based and scale with it)
+- **Corner radius**: `--radius`
+- **Sidebar / top bar size**: `--spacing-sidebar`, `--spacing-topbar`
+
+No component hard-codes a colour, font or size. The logo is the only image asset:
+replace `src/assets/ib-group-logo.svg` (or point `components/common/Logo.jsx` at a PNG), and the
+files in `public/` (`favicon.svg`, `favicon-32.png`, `apple-touch-icon.png`, `icon-192.png`,
+`icon-512.png`, `og-image.png`).
+
+## Folder structure
+
+```
+src/
+  app/            App root, providers, router (routes.jsx, guards.jsx)
+  components/
+    ui/           shadcn-style primitives (button, input, dialog, ...)
+    layout/       AppShell, Sidebar, Topbar, breadcrumbs, page hero
+    common/       Logo, loaders, empty state
+  config/         env, site copy, modules (sidebar), applications (dashboard tiles), API endpoints
+  features/       One folder per area, each self-contained
+    auth/           api, store, hooks, login page
+    dashboard/      announcements, application tiles
+    notifications/  bell + panel
+    gate-pass/      api, hooks, schemas, list + form pages
+    modules/        landing page for areas not migrated yet
+    errors/         404, access denied, crash page
+  hooks/          shared hooks (page title, media query, debounce)
+  lib/            axios client, query client, CASL abilities, date/error helpers
+  stores/         Zustand UI state
+  styles/         theme.css (the one place to restyle) and index.css
+  test/           test setup
+```
+
+**Adding a new module/page**: add it to `config/modules.js` (sidebar and permissions pick it up),
+create `features/<name>/` with `api/`, `hooks.js`, `pages/`, and register the page in
+`app/router/routes.jsx` using the `page(() => import(...))` helper. Call `usePageMeta('Title')` and
+render exactly one `<h1>` in each page.
+
+Types are documented with JSDoc (see `src/features/*/types.js`), and request/response shapes are
+checked at runtime with Zod.
+
+## Connecting the .NET API
+
+Everything backend-specific is in three places, so adjusting to the real contract is quick:
+
+1. **`src/config/endpoints.js`**: route paths.
+2. **`src/features/auth/api/auth.schemas.js`** and **`authApi.js`**: login request body and the
+   response shape (`accessToken`, optional `refreshToken`, `user { employeeId, name, roles }`).
+3. **`src/features/*/api/*Api.js`**: request/response shapes per feature. Gate pass list is assumed
+   to be `GET /gate-passes?search&from&to&purpose&status&page&pageSize` returning `{ items, total }`.
+
+Set `VITE_API_BASE_URL` (default `/api`). In development, set `VITE_API_PROXY_TARGET` to your API
+origin and Vite will proxy `/api` to it, so no CORS setup is needed. For production, serve the portal
+and API on the same origin (or enable CORS for the portal origin).
+
+Roles come from `user.roles`. Admin is visible only to `admin`; change this in `src/lib/ability.js`.
+
+Mock data is compiled out of production builds, and a production build with `VITE_USE_MOCK=true`
+fails on purpose.
+
+## Production
+
+- `npm run build`, then publish `dist/`.
+- The app uses clean URLs, so the server must return `index.html` for unknown paths.
+  `public/web.config` already does this for IIS. For nginx:
+  `location / { try_files $uri /index.html; }`
+- Source maps are disabled. JavaScript is split into per-page chunks plus three cached vendor chunks.
+- The site is marked `noindex` and `robots.txt` disallows all crawling because it is an internal portal.
+- Set `VITE_SITE_URL` (for example `https://portal.ibgroup.com`) so the share image (`og:image`) uses an absolute URL.
+- Dashboard application tiles stay disabled until you fill in `href` for each app in
+  `src/config/applications.js`.
+
+===== ./commitlint.config.js =====
+export default { extends: ['@commitlint/config-conventional'] }
+
+===== ./eslint.config.js =====
+import js from '@eslint/js'
+import prettier from 'eslint-config-prettier'
+import reactHooks from 'eslint-plugin-react-hooks'
+import reactRefresh from 'eslint-plugin-react-refresh'
+import security from 'eslint-plugin-security'
+import { defineConfig, globalIgnores } from 'eslint/config'
+import globals from 'globals'
+
+export default defineConfig([
+  globalIgnores(['dist', 'coverage', 'node_modules']),
+  {
+    files: ['**/*.{js,jsx}'],
+    extends: [
+      js.configs.recommended,
+      reactHooks.configs.flat.recommended,
+      reactRefresh.configs.vite,
+      security.configs.recommended,
+      prettier,
+    ],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: 'module',
+      // __USE_MOCK__ is injected by vite.config.js at build time.
+      globals: { ...globals.browser, __USE_MOCK__: 'readonly' },
+      parserOptions: { ecmaFeatures: { jsx: true } },
+    },
+    rules: {
+      // Capitalised names are React components used only inside JSX.
+      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]', argsIgnorePattern: '^_' }],
+      // Dynamic keys here are always fixed lookups, not user input.
+      'security/detect-object-injection': 'off',
+      'no-console': ['error', { allow: ['warn', 'error'] }],
+    },
+  },
+  {
+    // shadcn-style files export both components and variant helpers.
+    files: ['src/components/ui/**/*.{js,jsx}'],
+    rules: { 'react-refresh/only-export-components': 'off' },
+  },
+  {
+    files: ['vite.config.js', 'eslint.config.js', 'commitlint.config.js'],
+    languageOptions: { globals: globals.node },
+  },
+  {
+    files: ['**/*.test.{js,jsx}', 'src/test/**'],
+    languageOptions: { globals: globals.browser },
+  },
+])
+
+===== ./index.html =====
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <title>IB Group Employee Portal</title>
+    <meta
+      name="description"
+      content="IB Group Employee Portal: sign in to view your details, raise requests such as gate passes, and open IB Group workplace applications."
+    />
+    <meta name="application-name" content="IB Group Employee Portal" />
+    <meta name="theme-color" content="#006b3c" />
+    <!-- Internal, login-only portal: keep it out of search engines. -->
+    <meta name="robots" content="noindex, nofollow" />
+
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="IB Group Employee Portal" />
+    <meta property="og:title" content="IB Group Employee Portal" />
+    <meta
+      property="og:description"
+      content="One place for IB Group employees to access workplace applications, services and information."
+    />
+    <meta property="og:image" content="%VITE_SITE_URL%/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="IB Group Employee Portal" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="IB Group Employee Portal" />
+    <meta
+      name="twitter:description"
+      content="One place for IB Group employees to access workplace applications, services and information."
+    />
+    <meta name="twitter:image" content="%VITE_SITE_URL%/og-image.png" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>JavaScript is required to use the IB Group Employee Portal.</noscript>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+
+===== ./jsconfig.json =====
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "checkJs": false,
+    "paths": { "@/*": ["./src/*"] }
+  },
+  "include": ["src", "vite.config.js"]
+}
+
+===== ./package.json =====
+{
+  "name": "ib-employee-portal",
+  "private": true,
+  "version": "1.0.0",
+  "description": "IB Group Employee Portal - HR and employee self-service frontend",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepare": "husky || true"
+  },
+  "dependencies": {
+    "@casl/ability": "^7.1.3",
+    "@casl/react": "^7.1.0",
+    "@fontsource-variable/inter": "^5.3.0",
+    "@hookform/resolvers": "^7.0.9",
+    "@radix-ui/react-dialog": "^1.3.1",
+    "@radix-ui/react-dropdown-menu": "^2.2.1",
+    "@radix-ui/react-label": "^2.1.17",
+    "@radix-ui/react-slot": "^1.5.0",
+    "@tailwindcss/vite": "^4.3.5",
+    "@tanstack/react-query": "^5.108.4",
+    "axios": "^1.21.1",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.81.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-hook-form": "^7.92.0",
+    "react-router-dom": "^7.18.7",
+    "tailwind-merge": "^3.7.1",
+    "tailwindcss": "^4.3.5",
+    "zod": "^4.6.7",
+    "zustand": "^5.1.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^8.1.3",
+    "@babel/plugin-transform-runtime": "^8.1.2",
+    "@babel/runtime": "^8.1.3",
+    "@commitlint/cli": "^21.2.4",
+    "@commitlint/config-conventional": "^21.2.4",
+    "@eslint/js": "^10.0.1",
+    "@rolldown/plugin-babel": "^0.3.1",
+    "@testing-library/jest-dom": "^8.0.0",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.13",
+    "@vitejs/plugin-react": "^6.3.0",
+    "babel-plugin-react-compiler": "^1.0.0",
+    "eslint": "^10.15.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.8",
+    "eslint-plugin-security": "^4.2.1",
+    "globals": "^17.14.0",
+    "husky": "^9.1.7",
+    "jsdom": "^31.0.1",
+    "lint-staged": "^17.6.2",
+    "prettier": "^3.10.1",
+    "prettier-plugin-tailwindcss": "^0.8.1",
+    "vite": "^8.4.0",
+    "vitest": "^5.1.2"
+  },
+  "lint-staged": {
+    "*.{js,jsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,css,md,html}": [
+      "prettier --write"
+    ]
+  }
+}
+
+===== ./vite.config.js =====
+import { fileURLToPath, URL } from 'node:url'
+import babel from '@rolldown/plugin-babel'
+import tailwindcss from '@tailwindcss/vite'
+import react, { reactCompilerPreset } from '@vitejs/plugin-react'
+import { loadEnv } from 'vite'
+import { defineConfig } from 'vitest/config'
+
+// https://vite.dev/config/
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '')
+  const isTest = mode === 'test'
+  const useMock = env.VITE_USE_MOCK === 'true'
+  if (mode === 'production' && useMock) {
+    throw new Error('VITE_USE_MOCK must be "false" for production builds.')
+  }
+  return {
+    plugins: [
+      react(),
+      // React Compiler (auto-memoisation). Skipped in tests to keep them fast.
+      ...(isTest ? [] : [babel({ presets: [reactCompilerPreset()] })]),
+      tailwindcss(),
+    ],
+    define: {
+      // Replaced at build time so mock code is removed entirely from production bundles.
+      __USE_MOCK__: JSON.stringify(useMock),
+    },
+    resolve: {
+      alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
+    },
+    server: {
+      port: 5173,
+      // Forward /api calls to the .NET Web API during development (avoids CORS).
+      proxy: env.VITE_API_PROXY_TARGET
+        ? {
+            '/api': {
+              target: env.VITE_API_PROXY_TARGET,
+              changeOrigin: true,
+              secure: false,
+            },
+          }
+        : undefined,
+    },
+    build: {
+      target: 'es2022',
+      // Never ship source maps to production.
+      sourcemap: false,
+      chunkSizeWarningLimit: 400,
+      rolldownOptions: {
+        output: {
+          // Keep long-lived third-party code in separate, cache-friendly chunks.
+          codeSplitting: {
+            groups: [
+              {
+                name: 'react-vendor',
+                test: /node_modules[\\/](react|react-dom|react-router|react-router-dom|scheduler)[\\/]/,
+                priority: 30,
+              },
+              {
+                name: 'data-vendor',
+                test: /node_modules[\\/](@tanstack|axios|zustand|zod|@casl)[\\/]/,
+                priority: 20,
+              },
+              {
+                name: 'ui-vendor',
+                test: /node_modules[\\/](@radix-ui|lucide-react|react-hook-form|@hookform|class-variance-authority|clsx|tailwind-merge)[\\/]/,
+                priority: 10,
+              },
+            ],
+          },
+        },
+      },
+    },
+    test: {
+      globals: true,
+      environment: 'jsdom',
+      setupFiles: ['./src/test/setup.js'],
+      css: false,
+      restoreMocks: true,
+    },
+  }
+})
+
+===== ./.husky/commit-msg =====
+npx --no-install commitlint --edit "$1"
+
+===== ./.husky/pre-commit =====
+npx --no-install lint-staged
+
+===== ./public/favicon.svg =====
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="IB Group"><circle cx="32" cy="32" r="32" fill="#006b3c"/><g fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 19v26"/><path d="M31 19v26M31 19h8.4a6.2 6.2 0 0 1 0 12.4H31m0 0h9.6a6.8 6.8 0 0 1 0 13.6H31"/></g><path d="M8 50c8-9 16-9 24 0 8 9 16 9 24 0" fill="none" stroke="#6fcf74" stroke-width="2.5" stroke-linecap="round" opacity=".9"/></svg>
+
+===== ./public/robots.txt =====
+User-agent: *
+Disallow: /
+
+===== ./public/site.webmanifest =====
+{
+  "name": "IB Group Employee Portal",
+  "short_name": "IB Portal",
+  "description": "IB Group Employee Portal",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7faf9",
+  "theme_color": "#006b3c",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
+
+===== ./public/web.config =====
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- IIS: serve index.html for every client-side route (React Router) except real files and /api. -->
+<configuration>
+  <system.webServer>
+    <rewrite>
+      <rules>
+        <rule name="SPA fallback" stopProcessing="true">
+          <match url=".*" />
+          <conditions logicalGrouping="MatchAll">
+            <add input="{REQUEST_FILENAME}" matchType="IsFile" negate="true" />
+            <add input="{REQUEST_FILENAME}" matchType="IsDirectory" negate="true" />
+            <add input="{REQUEST_URI}" pattern="^/api/" negate="true" />
+          </conditions>
+          <action type="Rewrite" url="/index.html" />
+        </rule>
+      </rules>
+    </rewrite>
+    <staticContent>
+      <remove fileExtension=".woff2" />
+      <mimeMap fileExtension=".woff2" mimeType="font/woff2" />
+      <remove fileExtension=".webmanifest" />
+      <mimeMap fileExtension=".webmanifest" mimeType="application/manifest+json" />
+    </staticContent>
+  </system.webServer>
+</configuration>
+
+===== ./src/main.jsx =====
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import '@/styles/index.css'
+import App from '@/app/App'
+
+const root = document.getElementById('root')
+
+if (!root) throw new Error('Root element #root not found')
+createRoot(root).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+)
+
+===== ./src/app/App.jsx =====
+import { RouterProvider } from 'react-router-dom'
+import { AppProviders } from './providers/AppProviders'
+import { router } from './router'
+
+export default function App() {
+  return (
+    <AppProviders>
+      <RouterProvider router={router} />
+    </AppProviders>
+  )
+}
+
+===== ./src/app/App.test.jsx =====
+import { render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { createMemoryRouter, RouterProvider } from 'react-router-dom'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { useAuthStore } from '@/features/auth/store/authStore'
+import { queryClient } from '@/lib/query-client'
+import { AppProviders } from './providers/AppProviders'
+import { routes } from './router/routes'
+
+function renderApp(path) {
+  const router = createMemoryRouter(routes, { initialEntries: [path] })
+  return render(
+    <AppProviders>
+      <RouterProvider router={router} />
+    </AppProviders>,
+  )
+}
+
+function signIn(roles = ['employee']) {
+  useAuthStore.getState().setSession({
+    accessToken: 't',
+    user: { employeeId: '10039601', name: 'Test User', roles },
+  })
+}
+beforeEach(() => {
+  useAuthStore.getState().clear()
+  queryClient.clear()
+})
+describe('routing and auth', () => {
+  it('sends signed-out visitors to the login page with a single h1 and its own title', async () => {
+    renderApp('/gate-pass')
+    expect(
+      await screen.findByRole('heading', { level: 1, name: /employee portal/i }),
+    ).toBeInTheDocument()
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
+    expect(document.title).toBe('Sign in | IB Group Employee Portal')
+  })
+  it('returns the user to the page they originally asked for after login', async () => {
+    const user = userEvent.setup()
+    renderApp('/gate-pass')
+    await user.type(await screen.findByLabelText(/employee id/i), '10039601')
+    await user.type(screen.getByLabelText(/^password/i), 'secret')
+    await user.click(screen.getByRole('button', { name: 'Login' }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Gate Pass' })).toBeInTheDocument()
+  })
+  it('validates the login form before calling the API', async () => {
+    const user = userEvent.setup()
+    renderApp('/login')
+    await user.click(await screen.findByRole('button', { name: 'Login' }))
+    expect(await screen.findByText('Enter your employee ID or username.')).toBeInTheDocument()
+    expect(screen.getByText('Enter your password.')).toBeInTheDocument()
+  })
+  it('signs in and lands on the dashboard', async () => {
+    const user = userEvent.setup()
+    renderApp('/login')
+    await user.type(await screen.findByLabelText(/employee id/i), '10039601')
+    await user.type(screen.getByLabelText(/^password/i), 'secret')
+    await user.click(screen.getByRole('button', { name: 'Login' }))
+    expect(
+      await screen.findByRole('heading', { level: 1, name: /welcome back, 10039601/i }),
+    ).toBeInTheDocument()
+    expect(document.title).toBe('Home | IB Group Employee Portal')
+  })
+  it('shows a custom 404 page for unknown addresses', async () => {
+    signIn()
+    renderApp('/does-not-exist')
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Page not found' }),
+    ).toBeInTheDocument()
+    expect(document.title).toBe('Page not found | IB Group Employee Portal')
+  })
+  it('hides Admin from employees and blocks direct access', async () => {
+    signIn(['employee'])
+    renderApp('/admin')
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Access denied' }),
+    ).toBeInTheDocument()
+    expect(
+      within(screen.getByRole('navigation', { name: 'Main navigation' })).queryByText('Admin'),
+    ).toBeNull()
+  })
+})
+describe('gate pass', () => {
+  it('lists requests, validates the form, then creates a new request', async () => {
+    signIn()
+    const user = userEvent.setup()
+    renderApp('/gate-pass')
+    expect(await screen.findByRole('heading', { level: 1, name: 'Gate Pass' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'View request GP-1001' })).toBeInTheDocument()
+    await user.click(screen.getByRole('link', { name: /create gate pass request/i }))
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Create Gate Pass Request' }),
+    ).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /submit request/i }))
+    expect(await screen.findByText('Enter the place.')).toBeInTheDocument()
+    expect(screen.getByText('Select the purpose of visit.')).toBeInTheDocument()
+    await user.type(screen.getByLabelText(/^place/i), 'Warehouse')
+    await user.type(screen.getByLabelText(/date & time/i), '2026-12-01T10:30')
+    await user.type(screen.getByLabelText(/contact person/i), 'R. Sharma')
+    await user.selectOptions(screen.getByLabelText(/^purpose/i), 'Official')
+    await user.type(screen.getByLabelText(/^reason/i), 'Stock audit')
+    await user.click(screen.getByRole('button', { name: /submit request/i }))
+    expect(await screen.findByRole('status')).toHaveTextContent('submitted for approval')
+    await waitFor(() => expect(screen.getByText('Warehouse')).toBeInTheDocument())
+    expect(within(screen.getByRole('table')).getByText('Pending')).toBeInTheDocument()
+  })
+})
+
+===== ./src/assets/ib-group-logo.svg =====
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="IB Group"><circle cx="32" cy="32" r="32" fill="#006b3c"/><g fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 19v26"/><path d="M31 19v26M31 19h8.4a6.2 6.2 0 0 1 0 12.4H31m0 0h9.6a6.8 6.8 0 0 1 0 13.6H31"/></g><path d="M8 50c8-9 16-9 24 0 8 9 16 9 24 0" fill="none" stroke="#6fcf74" stroke-width="2.5" stroke-linecap="round" opacity=".9"/></svg>
+
+===== ./src/config/applications.js =====
+/** Applications shown on the dashboard. Fill in `href` for each app. */
+export const applications = [
+  { id: 'i-learn', name: 'I-Learn', group: 'Learning', tone: 'orange', mark: 'i-L', href: '' },
+  {
+    id: 'ib-next',
+    name: 'IB NEXT',
+    group: 'Workplace',
+    tone: 'green',
+    mark: 'IB',
+    useLogo: true,
+    href: '',
+  },
+  { id: 'ideabank', name: 'IDEABANK', group: 'Innovation', tone: 'purple', mark: 'Idea', href: '' },
+  {
+    id: 'grim',
+    name: 'GRIM Material Request',
+    group: 'Operations',
+    tone: 'rose',
+    mark: 'IB',
+    useLogo: true,
+    href: '',
+  },
+  {
+    id: 'website',
+    name: 'Corporate Website',
+    group: 'Workplace',
+    tone: 'teal',
+    mark: 'IB',
+    useLogo: true,
+    href: '',
+  },
+  { id: 'crm', name: 'CRM', group: 'Sales', tone: 'amber', mark: 'Connect', href: '' },
+  {
+    id: 'email',
+    name: 'Email',
+    group: 'Workplace',
+    tone: 'blue',
+    mark: 'IB',
+    useLogo: true,
+    href: '',
+  },
+  {
+    id: 'vehicle-tracking',
+    name: 'Vehicle Tracking',
+    group: 'Operations',
+    tone: 'green',
+    mark: 'Track',
+    href: '',
+  },
+  {
+    id: 'vision-360',
+    name: 'VISION-360 (Compliance)',
+    group: 'Compliance',
+    tone: 'rose',
+    mark: 'IB',
+    useLogo: true,
+    href: '',
+  },
+]
+
+===== ./src/config/endpoints.js =====
+/**
+ * .NET Web API routes, relative to VITE_API_BASE_URL.
+ * Adjust these to match the real controllers - this is the only file that knows the URLs.
+ */
+export const endpoints = {
+  auth: {
+    login: '/auth/login',
+    refresh: '/auth/refresh',
+    logout: '/auth/logout',
+  },
+  dashboard: {
+    announcements: '/announcements',
+    notifications: '/notifications',
+  },
+  gatePass: {
+    collection: '/gate-passes',
+    item: (id) => `/gate-passes/${encodeURIComponent(id)}`,
+  },
+}
+
+===== ./src/config/env.js =====
+import { z } from 'zod'
+
+const envSchema = z.object({
+  VITE_API_BASE_URL: z.string().min(1).default('/api'),
+})
+
+const parsed = envSchema.safeParse(import.meta.env)
+
+if (!parsed.success) {
+  throw new Error(`Invalid environment configuration: ${z.prettifyError(parsed.error)}`)
+}
+
+/** Validated, typed environment values. Import this instead of `import.meta.env`. */
+export const env = {
+  apiBaseUrl: parsed.data.VITE_API_BASE_URL.replace(/\/+$/, ''),
+}
+
+===== ./src/config/modules.js =====
+import {
+  FileText,
+  House,
+  IdCard,
+  Megaphone,
+  Monitor,
+  Receipt,
+  Settings,
+  UserRound,
+  Users,
+} from 'lucide-react'
+
+/** Every area of the portal. Drives the sidebar, routes and permission checks. */
+export const modules = [
+  {
+    id: 'home',
+    name: 'Home',
+    path: '/',
+    icon: House,
+    summary: 'Your applications and notifications.',
+  },
+  {
+    id: 'hr',
+    name: 'HR',
+    path: '/hr',
+    icon: Users,
+    summary: 'Human resources services and requests.',
+  },
+  {
+    id: 'it',
+    name: 'IT',
+    path: '/it',
+    icon: Monitor,
+    summary: 'IT support, assets and access requests.',
+  },
+  {
+    id: 'taxes',
+    name: 'Taxes',
+    path: '/taxes',
+    icon: Receipt,
+    summary: 'Tax declarations and statements.',
+  },
+  {
+    id: 'ibigian-self-service',
+    name: 'Ibigian Self Service',
+    path: '/self-service',
+    icon: UserRound,
+    summary: 'View and manage your own employee details.',
+  },
+  {
+    id: 'admin',
+    name: 'Admin',
+    path: '/admin',
+    icon: Settings,
+    summary: 'Office administration services.',
+  },
+  {
+    id: 'corp-communication',
+    name: 'Corp Communication',
+    path: '/corp-communication',
+    icon: Megaphone,
+    summary: 'Company announcements and communication.',
+  },
+  {
+    id: 'corporate-policies',
+    name: 'Corporate Policies',
+    path: '/corporate-policies',
+    icon: FileText,
+    summary: 'Company policies and guidelines.',
+  },
+  {
+    id: 'gate-pass',
+    name: 'Gate Pass',
+    path: '/gate-pass',
+    icon: IdCard,
+    summary: 'Create, track and manage gate pass requests.',
+  },
+]
+
+export function findModuleByPath(pathname) {
+  return modules.find(
+    (m) => m.path !== '/' && (pathname === m.path || pathname.startsWith(`${m.path}/`)),
+  )
+}
+
+===== ./src/config/site.js =====
+/** Site-wide copy used for page titles and descriptions. */
+export const site = {
+  name: 'IB Group Employee Portal',
+  shortName: 'IB Group',
+  description:
+    'IB Group Employee Portal: sign in to view your details, raise requests such as gate passes, and open IB Group workplace applications.',
+  titleSeparator: ' | ',
+}
+
+/** "Gate Pass | IB Group Employee Portal" */
+export function buildTitle(pageTitle) {
+  return pageTitle ? `${pageTitle}${site.titleSeparator}${site.name}` : site.name
+}
+
+===== ./src/hooks/useDebouncedValue.js =====
+import { useEffect, useState } from 'react'
+
+export function useDebouncedValue(value, delayMs = 300) {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), delayMs)
+    return () => window.clearTimeout(timer)
+  }, [value, delayMs])
+  return debounced
+}
+
+===== ./src/hooks/useMediaQuery.js =====
+import { useSyncExternalStore } from 'react'
+
+/** Subscribes to a CSS media query, e.g. `useMediaQuery('(min-width: 1024px)')`. */
+export function useMediaQuery(query) {
+  return useSyncExternalStore(
+    (notify) => {
+      const list = window.matchMedia(query)
+      list.addEventListener('change', notify)
+      return () => list.removeEventListener('change', notify)
+    },
+    () => window.matchMedia(query).matches,
+    () => false,
+  )
+}
+
+===== ./src/hooks/usePageMeta.js =====
+import { useEffect } from 'react'
+import { buildTitle, site } from '@/config/site'
+
+/**
+ * Sets the browser tab title and meta description for the current page.
+ * Every page calls this once so each one has a unique title and description.
+ */
+export function usePageMeta(title, description = site.description) {
+  useEffect(() => {
+    document.title = buildTitle(title)
+    document.querySelector('meta[name="description"]')?.setAttribute('content', description)
+  }, [title, description])
+}
+
+===== ./src/lib/ability.js =====
+import { createMongoAbility } from '@casl/ability'
+import { modules } from '@/config/modules'
+
+/** Modules that need a specific role. Everything else is open to every signed-in employee. */
+const restrictedModules = {
+  admin: 'admin',
+}
+
+/**
+ * Builds the permission set for a signed-in user.
+ * Roles come from the .NET login response (`user.roles`).
+ */
+export function defineAbilityFor(roles) {
+  // Not signed in: no permissions at all.
+  if (!roles) return createMongoAbility([])
+  const userRoles = roles
+  const rules = []
+  if (userRoles.includes('admin')) {
+    rules.push({ action: 'manage', subject: 'all' })
+  } else {
+    for (const { id } of modules) {
+      const required = restrictedModules[id]
+      if (!required || userRoles.includes(required)) {
+        rules.push({ action: 'view', subject: id })
+      }
+    }
+    rules.push(
+      { action: 'create', subject: 'gate-pass' },
+      { action: 'update', subject: 'gate-pass' },
+    )
+  }
+  return createMongoAbility(rules)
+}
+
+===== ./src/lib/ability.test.js =====
+import { describe, expect, it } from 'vitest'
+import { defineAbilityFor } from './ability'
+
+describe('defineAbilityFor', () => {
+  it('lets employees open everything except Admin', () => {
+    const ability = defineAbilityFor(['employee'])
+    expect(ability.can('view', 'gate-pass')).toBe(true)
+    expect(ability.can('view', 'hr')).toBe(true)
+    expect(ability.can('view', 'admin')).toBe(false)
+  })
+  it('lets admins open Admin', () => {
+    expect(defineAbilityFor(['employee', 'admin']).can('view', 'admin')).toBe(true)
+  })
+  it('denies everything when signed out', () => {
+    expect(defineAbilityFor(undefined).can('create', 'gate-pass')).toBe(false)
+  })
+})
+
+===== ./src/lib/api-error.js =====
+import axios from 'axios'
+
+/** Normalised error thrown by every API call. */
+export class ApiError extends Error {
+  status
+  fieldErrors
+  constructor(message, status = null, fieldErrors = {}) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.fieldErrors = fieldErrors
+  }
+}
+
+function asString(value) {
+  return typeof value === 'string' && value.trim() ? value : undefined
+}
+
+/** Converts any thrown value (Axios, .NET ProblemDetails, plain Error) into an ApiError. */
+export function toApiError(error) {
+  if (error instanceof ApiError) return error
+  if (axios.isAxiosError(error)) {
+    if (!error.response) {
+      return new ApiError(
+        error.code === 'ECONNABORTED'
+          ? 'The request took too long. Please try again.'
+          : 'Unable to reach the server. Check your connection and try again.',
+      )
+    }
+    const { status, data } = error.response
+    const fieldErrors = {}
+    if (data && typeof data === 'object' && data.errors && typeof data.errors === 'object') {
+      for (const [field, messages] of Object.entries(data.errors)) {
+        if (Array.isArray(messages)) {
+          fieldErrors[field] = messages.filter((m) => typeof m === 'string')
+        }
+      }
+    }
+    const message =
+      asString(data?.detail) ??
+      asString(data?.message) ??
+      asString(data?.title) ??
+      (status === 401
+        ? 'Your session has expired. Please sign in again.'
+        : status === 403
+          ? 'You do not have permission to do that.'
+          : status >= 500
+            ? 'Something went wrong on our side. Please try again later.'
+            : 'The request could not be completed.')
+    return new ApiError(message, status, fieldErrors)
+  }
+  return new ApiError(error instanceof Error ? error.message : 'Something went wrong.')
+}
+
+export function getErrorMessage(error) {
+  return toApiError(error).message
+}
+
+===== ./src/lib/api-error.test.js =====
+import { AxiosError } from 'axios'
+import { describe, expect, it } from 'vitest'
+import { ApiError, getErrorMessage, toApiError } from './api-error'
+
+function axiosError(status, data) {
+  const error = new AxiosError('failed')
+  error.response = { status, data }
+  return error
+}
+describe('toApiError', () => {
+  it('reads the detail from .NET ProblemDetails', () => {
+    const result = toApiError(axiosError(400, { title: 'Bad', detail: 'Employee ID is invalid.' }))
+    expect(result.message).toBe('Employee ID is invalid.')
+    expect(result.status).toBe(400)
+  })
+  it('collects validation errors per field', () => {
+    const result = toApiError(axiosError(400, { errors: { Place: ['Required'] } }))
+    expect(result.fieldErrors).toEqual({ Place: ['Required'] })
+  })
+  it('falls back to friendly text for server errors', () => {
+    expect(getErrorMessage(axiosError(500, ''))).toMatch(/went wrong/i)
+  })
+  it('reports a network failure when there is no response', () => {
+    expect(getErrorMessage(new AxiosError('Network Error'))).toMatch(/unable to reach/i)
+  })
+  it('passes ApiError through untouched', () => {
+    const original = new ApiError('x', 418)
+    expect(toApiError(original)).toBe(original)
+  })
+})
+
+===== ./src/lib/date.js =====
+const dateFormat = new Intl.DateTimeFormat('en-GB', {
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric',
+})
+
+const dateTimeFormat = new Intl.DateTimeFormat('en-GB', {
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: true,
+})
+
+function toDate(value) {
+  if (!value) return null
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+export function formatDate(value) {
+  const date = toDate(value)
+  return date ? dateFormat.format(date) : '-'
+}
+
+export function formatDateTime(value) {
+  const date = toDate(value)
+  return date ? dateTimeFormat.format(date) : '-'
+}
+
+===== ./src/lib/http.js =====
+import axios from 'axios'
+import { endpoints } from '@/config/endpoints'
+import { env } from '@/config/env'
+import { useAuthStore } from '@/features/auth/store/authStore'
+import { toApiError } from '@/lib/api-error'
+
+/** Shared Axios instance for the .NET Web API. */
+export const http = axios.create({
+  baseURL: env.apiBaseUrl,
+  timeout: 30_000,
+  headers: { Accept: 'application/json' },
+})
+http.interceptors.request.use((config) => {
+  const token = useAuthStore.getState().accessToken
+  if (token) config.headers.set('Authorization', `Bearer ${token}`)
+  return config
+})
+
+let refreshInFlight = null
+
+/** Exchanges the refresh token for a new access token. Concurrent callers share one request. */
+async function refreshAccessToken() {
+  const { refreshToken, setTokens } = useAuthStore.getState()
+  if (!refreshToken) return null
+  refreshInFlight ??= axios
+    .post(`${env.apiBaseUrl}${endpoints.auth.refresh}`, { refreshToken }, { timeout: 15_000 })
+    .then(({ data }) => {
+      setTokens(data)
+      return data.accessToken
+    })
+    .catch(() => null)
+    .finally(() => {
+      refreshInFlight = null
+    })
+  return refreshInFlight
+}
+http.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const original = error.config
+    const isAuthCall = original?.url?.startsWith(endpoints.auth.login) ?? false
+    if (error.response?.status === 401 && original && !original._retried && !isAuthCall) {
+      original._retried = true
+      const newToken = await refreshAccessToken()
+      if (newToken) {
+        original.headers.set('Authorization', `Bearer ${newToken}`)
+        return http(original)
+      }
+      // Session is no longer valid: clearing it sends the user to /login via the route guard.
+      useAuthStore.getState().clear()
+    }
+    return Promise.reject(toApiError(error))
+  },
+)
+
+===== ./src/lib/query-client.js =====
+import { QueryClient } from '@tanstack/react-query'
+import { ApiError } from '@/lib/api-error'
+
+export const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 60_000,
+      gcTime: 5 * 60_000,
+      refetchOnWindowFocus: false,
+      retry: (failureCount, error) => {
+        // Client errors (4xx) will not fix themselves - do not retry them.
+        if (error instanceof ApiError && error.status !== null && error.status < 500) return false
+        return failureCount < 2
+      },
+    },
+    mutations: { retry: false },
+  },
+})
+
+===== ./src/lib/relative-time.js =====
+const formatter = new Intl.RelativeTimeFormat('en', { numeric: 'auto' })
+
+const units = [
+  ['day', 86_400_000],
+  ['hour', 3_600_000],
+  ['minute', 60_000],
+]
+
+/** "2 hours ago", "yesterday", "just now". */
+export function formatRelativeTime(iso, now = Date.now()) {
+  const time = new Date(iso).getTime()
+  if (Number.isNaN(time)) return ''
+  const diff = time - now
+  for (const [unit, ms] of units) {
+    if (Math.abs(diff) >= ms) return formatter.format(Math.round(diff / ms), unit)
+  }
+  return 'just now'
+}
+
+===== ./src/lib/storage.js =====
+/** localStorage helpers that never throw (private mode, quota, disabled storage). */
+export function readJson(key) {
+  try {
+    const raw = window.localStorage.getItem(key)
+    return raw === null ? null : JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
+export function writeJson(key, value) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // Storage unavailable: the app keeps working for this session.
+  }
+}
+
+===== ./src/lib/utils.js =====
+import { clsx } from 'clsx'
+import { twMerge } from 'tailwind-merge'
+
+/** Merge conditional class names and resolve Tailwind conflicts. */
+export function cn(...inputs) {
+  return twMerge(clsx(inputs))
+}
+
+===== ./src/stores/uiStore.js =====
+import { create } from 'zustand'
+import { createJSONStorage, persist } from 'zustand/middleware'
+
+export const useUiStore = create()(
+  persist(
+    (set) => ({
+      sidebarCollapsed: false,
+      mobileNavOpen: false,
+      applicationSearch: '',
+      toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
+      setMobileNavOpen: (open) => set({ mobileNavOpen: open }),
+      setApplicationSearch: (value) => set({ applicationSearch: value }),
+    }),
+    {
+      name: 'ib-portal-ui',
+      storage: createJSONStorage(() => window.localStorage),
+      partialize: ({ sidebarCollapsed }) => ({ sidebarCollapsed }),
+    },
+  ),
+)
+
+===== ./src/styles/index.css =====
+@import 'tailwindcss';
+@import './theme.css';
+
+@layer base {
+  html {
+    font-size: var(--font-size-base);
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    min-width: 320px;
+    min-height: 100vh;
+    margin: 0;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-family-sans);
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  button:not(:disabled),
+  [role='button']:not(:disabled) {
+    cursor: pointer;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@theme {
+  --animate-fade-in: fade-in 0.15s ease-out;
+  --animate-slide-in-left: slide-in-left 0.2s ease-out;
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes slide-in-left {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(0);
+    }
+  }
+}
+
+===== ./src/styles/theme.css =====
+/*
+ * ============================================================================
+ *  THEME - the ONE place to change the look of the whole portal.
+ *
+ *  Font      -> the @import below + --font-family-sans
+ *  Colours   -> the "Colours" block in :root
+ *  Font size -> --font-size-base (every rem-based size scales from it)
+ *  Radius    -> --radius
+ *  Layout    -> --spacing-sidebar / --spacing-topbar in @theme
+ *
+ *  Do not hard-code colours, fonts or sizes anywhere else in the codebase.
+ * ============================================================================
+ */
+
+/* Font file (self-hosted via npm, no external request). To switch font, install
+   another @fontsource package, change this import and --font-family-sans. */
+@import '@fontsource-variable/inter';
+
+:root {
+  /* ---- Typography ---------------------------------------------------- */
+  --font-family-sans: 'Inter Variable', 'Segoe UI', system-ui, -apple-system, Arial, sans-serif;
+  --font-size-base: 16px; /* 1rem. Make it 17px/18px to enlarge the whole UI. */
+
+  /* ---- Shape --------------------------------------------------------- */
+  --radius: 0.75rem;
+
+  /* ---- Colours: surfaces & text ------------------------------------- */
+  --background: #f7fafb;
+  --foreground: #161b20;
+  --card: #ffffff;
+  --card-foreground: #161b20;
+  --popover: #ffffff;
+  --popover-foreground: #161b20;
+  --muted: #eef3f2;
+  --muted-foreground: #56616b;
+
+  /* ---- Colours: brand ------------------------------------------------ */
+  --primary: #006b3c;
+  --primary-hover: #005430;
+  --primary-foreground: #ffffff;
+  --primary-soft: #e9f7ed; /* light green panels, icon chips */
+  --primary-soft-foreground: #07592f;
+  --secondary: #edf8f1;
+  --secondary-foreground: #006b3c;
+  --accent: #e9f7ed;
+  --accent-foreground: #07592f;
+  --brand-dark: #004b32;
+  --brand-mid: #007248;
+  --brand-light: #72cbb4;
+  --brand-highlight: #65cf74;
+
+  /* ---- Colours: feedback -------------------------------------------- */
+  --destructive: #b42318;
+  --destructive-foreground: #ffffff;
+  --success: #155b2b;
+  --success-soft: #e0f6df;
+  --warning: #7a5603;
+  --warning-soft: #fff3d8;
+  --danger: #9c2c26;
+  --danger-soft: #fde5e4;
+
+  /* ---- Colours: lines & focus --------------------------------------- */
+  --border: #e1e8e9;
+  --input: #cfd9df;
+  --ring: #087343;
+
+  /* ---- Colours: sidebar --------------------------------------------- */
+  --sidebar: #004b32;
+  --sidebar-foreground: #f2fbf5;
+  --sidebar-hover: rgb(255 255 255 / 0.1);
+  --sidebar-border: rgb(255 255 255 / 0.12);
+  --sidebar-active: #edfff0;
+  --sidebar-active-foreground: #00532f;
+
+  /* ---- Colours: application tiles on the dashboard ------------------ */
+  --tone-orange-border: #ffbf91;
+  --tone-orange-bg: #fff4e9;
+  --tone-green-border: #97d49c;
+  --tone-green-bg: #effbef;
+  --tone-purple-border: #b497ff;
+  --tone-purple-bg: #f5f0ff;
+  --tone-rose-border: #ff91a0;
+  --tone-rose-bg: #fff0f2;
+  --tone-teal-border: #66dbbb;
+  --tone-teal-bg: #eafff8;
+  --tone-amber-border: #ffbe25;
+  --tone-amber-bg: #fff9e6;
+  --tone-blue-border: #81aaff;
+  --tone-blue-bg: #eff5ff;
+
+  /* ---- Gradients ----------------------------------------------------- */
+  --gradient-brand: linear-gradient(
+    145deg,
+    var(--brand-mid) 0%,
+    var(--brand-dark) 56%,
+    #00603e 100%
+  );
+}
+
+/* Maps the variables above to Tailwind utilities (bg-primary, text-muted-foreground, ...). */
+@theme inline {
+  --font-sans: var(--font-family-sans);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-soft-foreground: var(--primary-soft-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-brand-dark: var(--brand-dark);
+  --color-brand-mid: var(--brand-mid);
+  --color-brand-light: var(--brand-light);
+  --color-brand-highlight: var(--brand-highlight);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-hover: var(--sidebar-hover);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-active: var(--sidebar-active);
+  --color-sidebar-active-foreground: var(--sidebar-active-foreground);
+
+  --color-tone-orange-border: var(--tone-orange-border);
+  --color-tone-orange-bg: var(--tone-orange-bg);
+  --color-tone-green-border: var(--tone-green-border);
+  --color-tone-green-bg: var(--tone-green-bg);
+  --color-tone-purple-border: var(--tone-purple-border);
+  --color-tone-purple-bg: var(--tone-purple-bg);
+  --color-tone-rose-border: var(--tone-rose-border);
+  --color-tone-rose-bg: var(--tone-rose-bg);
+  --color-tone-teal-border: var(--tone-teal-border);
+  --color-tone-teal-bg: var(--tone-teal-bg);
+  --color-tone-amber-border: var(--tone-amber-border);
+  --color-tone-amber-bg: var(--tone-amber-bg);
+  --color-tone-blue-border: var(--tone-blue-border);
+  --color-tone-blue-bg: var(--tone-blue-bg);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+}
+
+/* Layout dimensions (generate w-sidebar, ml-sidebar, h-topbar, ...). */
+@theme {
+  --spacing-sidebar: 16.625rem;
+  --spacing-sidebar-collapsed: 4.875rem;
+  --spacing-topbar: 4.375rem;
+}
+
+@utility bg-brand-gradient {
+  background: var(--gradient-brand);
+}
+
+===== ./src/test/setup.js =====
+import '@testing-library/jest-dom/vitest'
+import { cleanup } from '@testing-library/react'
+import { afterEach } from 'vitest'
+
+afterEach(() => {
+  cleanup()
+  window.localStorage.clear()
+})
+// jsdom has no matchMedia.
+if (!window.matchMedia) {
+  window.matchMedia = (query) => ({
+    matches: query.includes('min-width') ? true : false,
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  })
+}
+
+===== ./src/app/providers/AppProviders.jsx =====
+import { AbilityProvider } from '@casl/react'
+import { QueryClientProvider } from '@tanstack/react-query'
+import { useMemo } from 'react'
+import { useAuthStore } from '@/features/auth/store/authStore'
+import { defineAbilityFor } from '@/lib/ability'
+import { queryClient } from '@/lib/query-client'
+
+/** Wraps the app with server-state and permission providers. */
+export function AppProviders({ children }) {
+  const roles = useAuthStore((state) => state.user?.roles)
+  const ability = useMemo(() => defineAbilityFor(roles), [roles])
+  return (
+    <QueryClientProvider client={queryClient}>
+      <AbilityProvider value={ability}>{children}</AbilityProvider>
+    </QueryClientProvider>
+  )
+}
+
+===== ./src/app/router/guards.jsx =====
+import { useAbility } from '@casl/react'
+import { Navigate, Outlet, useLocation } from 'react-router-dom'
+import { safeRedirect } from '@/features/auth/redirect'
+import { selectIsAuthenticated, useAuthStore } from '@/features/auth/store/authStore'
+import ForbiddenPage from '@/features/errors/pages/ForbiddenPage'
+
+/** Only signed-in users pass. Others go to /login and come back afterwards. */
+export function ProtectedRoute() {
+  const isAuthenticated = useAuthStore(selectIsAuthenticated)
+  const location = useLocation()
+  if (!isAuthenticated) {
+    return (
+      <Navigate
+        to="/login"
+        replace
+        state={{ from: `${location.pathname}${location.search}${location.hash}` }}
+      />
+    )
+  }
+  return <Outlet />
+}
+
+/** Signed-in users skip the login page and go to where they were heading (or home). */
+export function GuestRoute() {
+  const isAuthenticated = useAuthStore(selectIsAuthenticated)
+  const location = useLocation()
+  const from = location.state?.from
+  return isAuthenticated ? <Navigate to={safeRedirect(from)} replace /> : <Outlet />
+}
+
+/** Shows a "no access" page unless the user may view the given module. */
+export function RequireAbility({ subject }) {
+  const ability = useAbility()
+  return ability.can('view', subject) ? <Outlet /> : <ForbiddenPage />
+}
+
+===== ./src/app/router/index.js =====
+import { createBrowserRouter } from 'react-router-dom'
+import { routes } from './routes'
+
+export const router = createBrowserRouter(routes)
+
+===== ./src/app/router/routes.jsx =====
+import { Navigate } from 'react-router-dom'
+import { AppShell } from '@/components/layout/AppShell'
+import { PageLoader } from '@/components/common/PageLoader'
+import { modules } from '@/config/modules'
+import RouteErrorPage from '@/features/errors/pages/RouteErrorPage'
+import { GuestRoute, ProtectedRoute, RequireAbility } from './guards'
+
+/** Pages are lazy-loaded so each one becomes its own small JavaScript chunk. */
+const page = (load) => ({
+  lazy: async () => ({ Component: (await load()).default }),
+})
+
+const moduleRoutes = modules
+  .filter((module) => module.id !== 'home' && module.id !== 'gate-pass')
+  .map((module) => ({
+    path: module.path,
+    element: <RequireAbility subject={module.id} />,
+    children: [{ index: true, ...page(() => import('@/features/modules/pages/ModulePage')) }],
+  }))
+
+/** Route table. Kept separate from the router instance so tests can use an in-memory router. */
+export const routes = [
+  {
+    errorElement: <RouteErrorPage />,
+    hydrateFallbackElement: <PageLoader />,
+    children: [
+      {
+        element: <GuestRoute />,
+        children: [{ path: '/login', ...page(() => import('@/features/auth/pages/LoginPage')) }],
+      },
+      {
+        element: <ProtectedRoute />,
+        children: [
+          {
+            element: <AppShell />,
+            children: [
+              { index: true, ...page(() => import('@/features/dashboard/pages/DashboardPage')) },
+              {
+                path: 'gate-pass',
+                element: <RequireAbility subject="gate-pass" />,
+                children: [
+                  {
+                    index: true,
+                    ...page(() => import('@/features/gate-pass/pages/GatePassListPage')),
+                  },
+                  {
+                    path: 'create',
+                    ...page(() => import('@/features/gate-pass/pages/GatePassFormPage')),
+                  },
+                  {
+                    path: ':id/edit',
+                    ...page(() => import('@/features/gate-pass/pages/GatePassFormPage')),
+                  },
+                ],
+              },
+              ...moduleRoutes,
+              { path: '*', ...page(() => import('@/features/errors/pages/NotFoundPage')) },
+            ],
+          },
+        ],
+      },
+      { path: '/index.html', element: <Navigate to="/" replace /> },
+    ],
+  },
+]
+
+===== ./src/components/common/EmptyState.jsx =====
+export function EmptyState({ children }) {
+  return (
+    <p className="col-span-full px-4 py-8 text-center text-sm text-muted-foreground">{children}</p>
+  )
+}
+
+===== ./src/components/common/Logo.jsx =====
+import logoUrl from '@/assets/ib-group-logo.svg'
+import { cn } from '@/lib/utils'
+
+/** The single place that imports the logo file. Swap the asset to rebrand. */
+export function Logo({ className, alt = 'IB Group logo' }) {
+  return (
+    <img
+      src={logoUrl}
+      alt={alt}
+      width={64}
+      height={64}
+      className={cn('rounded-full bg-white object-contain', className)}
+    />
+  )
+}
+
+===== ./src/components/common/PageLoader.jsx =====
+export function PageLoader() {
+  return (
+    <div role="status" aria-live="polite" className="flex min-h-[40vh] items-center justify-center">
+      <span className="size-8 animate-spin rounded-full border-4 border-primary-soft border-t-primary" />
+      <span className="sr-only">Loading</span>
+    </div>
+  )
+}
+
+===== ./src/components/layout/AppShell.jsx =====
+import { Suspense } from 'react'
+import { Outlet, useNavigation } from 'react-router-dom'
+import { PageLoader } from '@/components/common/PageLoader'
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet'
+import { useMediaQuery } from '@/hooks/useMediaQuery'
+import { cn } from '@/lib/utils'
+import { useUiStore } from '@/stores/uiStore'
+import { SidebarContent } from './SidebarContent'
+import { Topbar } from './Topbar'
+
+/** Authenticated layout: sidebar + top bar + page content. */
+export function AppShell() {
+  const isDesktop = useMediaQuery('(min-width: 1024px)')
+  const collapsed = useUiStore((state) => state.sidebarCollapsed)
+  const mobileOpen = useUiStore((state) => state.mobileNavOpen)
+  const toggleSidebar = useUiStore((state) => state.toggleSidebar)
+  const setMobileOpen = useUiStore((state) => state.setMobileNavOpen)
+  const navigation = useNavigation()
+  return (
+    <div className="min-h-screen bg-background">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[60] focus:rounded-lg focus:bg-primary focus:px-4 focus:py-2 focus:text-primary-foreground"
+      >
+        Skip to main content
+      </a>
+
+      {navigation.state === 'loading' && (
+        <div
+          role="progressbar"
+          aria-label="Loading page"
+          className="fixed inset-x-0 top-0 z-[70] h-1 animate-pulse bg-brand-highlight"
+        />
+      )}
+
+      {isDesktop ? (
+        <aside
+          id="main-navigation"
+          className={cn(
+            'fixed inset-y-0 left-0 z-30 overflow-hidden bg-sidebar text-sidebar-foreground transition-[width] duration-200',
+            collapsed ? 'w-sidebar-collapsed' : 'w-sidebar',
+          )}
+        >
+          <SidebarContent collapsed={collapsed} />
+        </aside>
+      ) : (
+        <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+          <SheetContent id="main-navigation">
+            <SheetTitle className="sr-only">Navigation</SheetTitle>
+            <SheetDescription className="sr-only">Portal sections</SheetDescription>
+            <SidebarContent onNavigate={() => setMobileOpen(false)} />
+          </SheetContent>
+        </Sheet>
+      )}
+
+      <div
+        className={cn(
+          'min-h-screen transition-[margin] duration-200',
+          isDesktop && (collapsed ? 'ml-sidebar-collapsed' : 'ml-sidebar'),
+        )}
+      >
+        <Topbar
+          navExpanded={isDesktop ? !collapsed : mobileOpen}
+          onToggleNav={isDesktop ? toggleSidebar : () => setMobileOpen(!mobileOpen)}
+        />
+        <main id="main-content" tabIndex={-1} className="px-4 py-5 outline-none sm:px-6 sm:pb-8">
+          <Suspense fallback={<PageLoader />}>
+            <Outlet />
+          </Suspense>
+        </main>
+      </div>
+    </div>
+  )
+}
+
+===== ./src/components/layout/PageBreadcrumbs.jsx =====
+import { House } from 'lucide-react'
+import { Fragment } from 'react'
+import { Link } from 'react-router-dom'
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@/components/ui/breadcrumb'
+
+/** "Home > Gate Pass > ..." - Home is always the first crumb. */
+export function PageBreadcrumbs({ items }) {
+  return (
+    <Breadcrumb className="mb-4 px-1">
+      <BreadcrumbList>
+        <BreadcrumbItem>
+          <BreadcrumbLink asChild>
+            <Link to="/">
+              <House className="size-4 text-primary" aria-hidden="true" />
+              Home
+            </Link>
+          </BreadcrumbLink>
+        </BreadcrumbItem>
+        {items.map((item, index) => {
+          const isLast = index === items.length - 1
+          return (
+            <Fragment key={item.label}>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem>
+                {isLast || !item.to ? (
+                  <BreadcrumbPage>{item.label}</BreadcrumbPage>
+                ) : (
+                  <BreadcrumbLink asChild>
+                    <Link to={item.to}>{item.label}</Link>
+                  </BreadcrumbLink>
+                )}
+              </BreadcrumbItem>
+            </Fragment>
+          )
+        })}
+      </BreadcrumbList>
+    </Breadcrumb>
+  )
+}
+
+===== ./src/components/layout/PageHero.jsx =====
+import { Card } from '@/components/ui/card'
+import { cn } from '@/lib/utils'
+
+/** Page header. Renders the page's single <h1>. */
+export function PageHero({ icon, title, description, action, variant = 'card' }) {
+  const content = (
+    <div
+      className={cn(
+        'flex flex-wrap items-center gap-4 bg-gradient-to-br from-card from-55% to-primary-soft/60 p-5 sm:gap-5 sm:p-6',
+        variant === 'embedded' && 'border-b border-border',
+      )}
+    >
+      <div
+        aria-hidden="true"
+        className="grid size-16 shrink-0 place-items-center rounded-2xl bg-primary-soft text-primary sm:size-20 [&_svg]:size-8 sm:[&_svg]:size-10"
+      >
+        {icon}
+      </div>
+      <div className="min-w-0 flex-1">
+        <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1>
+        <p className="mt-1.5 text-muted-foreground">{description}</p>
+      </div>
+      {action}
+    </div>
+  )
+  if (variant === 'embedded') return content
+  return <Card className="mb-5 overflow-hidden">{content}</Card>
+}
+
+===== ./src/components/layout/SidebarContent.jsx =====
+import { useAbility } from '@casl/react'
+import { Search, X } from 'lucide-react'
+import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
+import { Logo } from '@/components/common/Logo'
+import { modules } from '@/config/modules'
+import { cn } from '@/lib/utils'
+import { useUiStore } from '@/stores/uiStore'
+
+export function SidebarContent({ collapsed = false, onNavigate }) {
+  const ability = useAbility()
+  const navigate = useNavigate()
+  const { pathname } = useLocation()
+  const search = useUiStore((state) => state.applicationSearch)
+  const setSearch = useUiStore((state) => state.setApplicationSearch)
+  function handleSearch(value) {
+    setSearch(value)
+    // Applications live on the home page, so show them as soon as the user searches.
+    if (value && pathname !== '/') navigate('/')
+  }
+  return (
+    <div className="flex h-full flex-col">
+      <Link
+        to="/"
+        onClick={onNavigate}
+        className={cn(
+          'flex h-24 shrink-0 items-center gap-3 border-b border-sidebar-border text-2xl font-bold whitespace-nowrap',
+          collapsed ? 'justify-center px-3' : 'px-8',
+        )}
+      >
+        <Logo alt="" className="size-12 shrink-0" />
+        <span className={cn(collapsed && 'sr-only')}>IB GROUP</span>
+        {collapsed && <span className="sr-only">Home</span>}
+      </Link>
+
+      {!collapsed && (
+        <search className="mx-3 mt-6 mb-3">
+          <label className="flex h-10 items-center gap-2 rounded-lg border border-white/30 bg-white/10 px-2.5 focus-within:border-white/70">
+            <Search className="size-4 shrink-0" aria-hidden="true" />
+            <span className="sr-only">Search applications</span>
+            <input
+              type="search"
+              value={search}
+              onChange={(event) => handleSearch(event.target.value)}
+              placeholder="Search applications..."
+              autoComplete="off"
+              className="min-w-0 flex-1 bg-transparent text-sm text-white outline-none placeholder:text-white/75 [&::-webkit-search-cancel-button]:hidden"
+            />
+            {search && (
+              <button
+                type="button"
+                aria-label="Clear search"
+                onClick={() => setSearch('')}
+                className="rounded p-0.5 hover:bg-white/15"
+              >
+                <X className="size-3.5" aria-hidden="true" />
+              </button>
+            )}
+          </label>
+        </search>
+      )}
+
+      <nav
+        aria-label="Main navigation"
+        className={cn('flex-1 overflow-y-auto px-2.5 pb-6', collapsed && 'pt-6')}
+      >
+        <ul className="grid gap-1.5">
+          {modules
+            .filter((module) => ability.can('view', module.id))
+            .map((module) => (
+              <li key={module.id}>
+                <NavLink
+                  to={module.path}
+                  end={module.path === '/'}
+                  onClick={onNavigate}
+                  title={module.name}
+                  className={({ isActive }) =>
+                    cn(
+                      'flex min-h-12 items-center gap-4 rounded-xl text-base transition-colors',
+                      collapsed ? 'justify-center' : 'px-4',
+                      isActive
+                        ? 'bg-sidebar-active font-bold text-sidebar-active-foreground shadow-sm'
+                        : 'text-sidebar-foreground hover:bg-sidebar-hover',
+                    )
+                  }
+                >
+                  <module.icon className="size-5.5 shrink-0" aria-hidden="true" />
+                  <span className={cn(collapsed && 'sr-only')}>{module.name}</span>
+                </NavLink>
+              </li>
+            ))}
+        </ul>
+      </nav>
+    </div>
+  )
+}
+
+===== ./src/components/layout/Topbar.jsx =====
+import { ChevronDown, LogOut, Menu, UserRound } from 'lucide-react'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { useAuthStore } from '@/features/auth/store/authStore'
+import { useLogout } from '@/features/auth/hooks'
+import { NotificationBell } from '@/features/notifications/components/NotificationBell'
+
+export function Topbar({ onToggleNav, navExpanded }) {
+  const user = useAuthStore((state) => state.user)
+  const logout = useLogout()
+  const showId = user && user.name !== user.employeeId
+  return (
+    <header className="sticky top-0 z-20 flex h-topbar items-center gap-3 border-b border-border bg-card px-3 shadow-sm sm:gap-5 sm:px-6">
+      <button
+        type="button"
+        aria-label="Toggle navigation"
+        aria-expanded={navExpanded}
+        aria-controls="main-navigation"
+        onClick={onToggleNav}
+        className="rounded-lg p-2 text-primary hover:bg-secondary"
+      >
+        <Menu className="size-6" aria-hidden="true" />
+      </button>
+      <span className="text-base font-medium sm:text-xl">Employee Portal</span>
+      <div className="flex-1" />
+      <NotificationBell />
+      <DropdownMenu>
+        <DropdownMenuTrigger className="flex items-center gap-2 rounded-lg p-1 text-left hover:bg-secondary sm:gap-3">
+          <span className="grid size-10 place-items-center rounded-full bg-primary-soft text-primary sm:size-12">
+            <UserRound className="size-6" aria-hidden="true" />
+          </span>
+          <span className="hidden sm:block">
+            <b className="font-semibold">{user?.name ?? 'Employee'}</b>
+            <small className="ml-1 text-sm text-muted-foreground">
+              ({showId ? user.employeeId : 'Employee'})
+            </small>
+          </span>
+          <span className="sr-only sm:hidden">Account menu</span>
+          <ChevronDown className="size-4" aria-hidden="true" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent className="w-60">
+          <DropdownMenuLabel>
+            Signed in as <b>{user?.name}</b>
+          </DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onSelect={logout} className="font-semibold text-primary">
+            <LogOut aria-hidden="true" /> Sign out
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </header>
+  )
+}
+
+===== ./src/components/ui/badge.jsx =====
+import { cva } from 'class-variance-authority'
+import { cn } from '@/lib/utils'
+
+const badgeVariants = cva(
+  'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-semibold [&_svg]:size-4',
+  {
+    variants: {
+      variant: {
+        success: 'bg-success-soft text-success',
+        warning: 'bg-warning-soft text-warning',
+        danger: 'bg-danger-soft text-danger',
+        neutral: 'bg-muted text-foreground',
+      },
+    },
+    defaultVariants: { variant: 'neutral' },
+  },
+)
+
+function Badge({ className, variant, ...props }) {
+  return <span className={cn(badgeVariants({ variant }), className)} {...props} />
+}
+
+export { Badge }
+
+===== ./src/components/ui/breadcrumb.jsx =====
+import { Slot } from '@radix-ui/react-slot'
+import { ChevronRight } from 'lucide-react'
+import { cn } from '@/lib/utils'
+
+function Breadcrumb(props) {
+  return <nav aria-label="Breadcrumb" {...props} />
+}
+
+function BreadcrumbList({ className, ...props }) {
+  return (
+    <ol
+      className={cn('flex flex-wrap items-center gap-2 text-sm text-muted-foreground', className)}
+      {...props}
+    />
+  )
+}
+
+function BreadcrumbItem({ className, ...props }) {
+  return <li className={cn('inline-flex items-center gap-2', className)} {...props} />
+}
+
+function BreadcrumbLink({ asChild, className, ...props }) {
+  const Comp = asChild ? Slot : 'a'
+  return (
+    <Comp
+      className={cn('inline-flex items-center gap-2 text-foreground hover:underline', className)}
+      {...props}
+    />
+  )
+}
+
+function BreadcrumbPage({ className, ...props }) {
+  return (
+    <span aria-current="page" className={cn('font-medium text-foreground', className)} {...props} />
+  )
+}
+
+function BreadcrumbSeparator({ className, ...props }) {
+  return (
+    <li
+      role="presentation"
+      aria-hidden="true"
+      className={cn('flex [&_svg]:size-4', className)}
+      {...props}
+    >
+      <ChevronRight />
+    </li>
+  )
+}
+
+export {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+}
+
+===== ./src/components/ui/button.jsx =====
+import { Slot } from '@radix-ui/react-slot'
+import { cva } from 'class-variance-authority'
+import { cn } from '@/lib/utils'
+
+const buttonVariants = cva(
+  "inline-flex shrink-0 items-center justify-center gap-2 rounded-lg text-sm font-semibold whitespace-nowrap transition-colors disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  {
+    variants: {
+      variant: {
+        default: 'bg-primary text-primary-foreground shadow-sm hover:bg-primary-hover',
+        outline: 'border border-input bg-card text-primary hover:bg-secondary',
+        secondary: 'bg-secondary text-secondary-foreground hover:bg-accent',
+        ghost: 'text-primary hover:bg-secondary',
+        destructive: 'bg-destructive text-destructive-foreground hover:opacity-90',
+        link: 'text-primary underline-offset-4 hover:underline',
+      },
+      size: {
+        default: 'h-11 px-5',
+        sm: 'h-9 px-3',
+        lg: 'h-12 px-6 text-base',
+        icon: 'size-10',
+      },
+    },
+    defaultVariants: { variant: 'default', size: 'default' },
+  },
+)
+
+function Button({ className, variant, size, asChild = false, type, ...props }) {
+  const Comp = asChild ? Slot : 'button'
+  return (
+    <Comp
+      className={cn(buttonVariants({ variant, size }), className)}
+      // Default to "button" so a Button inside a <form> never submits by accident.
+      {...(asChild ? {} : { type: type ?? 'button' })}
+      {...props}
+    />
+  )
+}
+
+export { Button, buttonVariants }
+
+===== ./src/components/ui/card.jsx =====
+import { cn } from '@/lib/utils'
+
+function Card({ className, ...props }) {
+  return (
+    <div
+      className={cn(
+        'rounded-2xl border border-border bg-card text-card-foreground shadow-sm',
+        className,
+      )}
+      {...props}
+    />
+  )
+}
+
+export { Card }
+
+===== ./src/components/ui/dialog.jsx =====
+import * as DialogPrimitive from '@radix-ui/react-dialog'
+import { X } from 'lucide-react'
+import { cn } from '@/lib/utils'
+
+const Dialog = DialogPrimitive.Root
+
+const DialogTrigger = DialogPrimitive.Trigger
+
+const DialogClose = DialogPrimitive.Close
+
+function DialogOverlay({ className, ...props }) {
+  return (
+    <DialogPrimitive.Overlay
+      className={cn('fixed inset-0 z-50 animate-fade-in bg-foreground/45', className)}
+      {...props}
+    />
+  )
+}
+
+function DialogContent({ className, children, ...props }) {
+  return (
+    <DialogPrimitive.Portal>
+      <DialogOverlay />
+      <DialogPrimitive.Content
+        className={cn(
+          'fixed top-1/2 left-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 animate-fade-in rounded-2xl bg-card p-6 shadow-xl',
+          className,
+        )}
+        {...props}
+      >
+        {children}
+        <DialogPrimitive.Close className="absolute top-4 right-4 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground">
+          <X className="size-5" aria-hidden="true" />
+          <span className="sr-only">Close</span>
+        </DialogPrimitive.Close>
+      </DialogPrimitive.Content>
+    </DialogPrimitive.Portal>
+  )
+}
+
+function DialogTitle({ className, ...props }) {
+  return <DialogPrimitive.Title className={cn('text-xl font-bold', className)} {...props} />
+}
+
+function DialogDescription({ className, ...props }) {
+  return (
+    <DialogPrimitive.Description
+      className={cn('text-sm text-muted-foreground', className)}
+      {...props}
+    />
+  )
+}
+
+export {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogOverlay,
+  DialogTitle,
+  DialogTrigger,
+}
+
+===== ./src/components/ui/dropdown-menu.jsx =====
+import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu'
+import { cn } from '@/lib/utils'
+
+const DropdownMenu = DropdownMenuPrimitive.Root
+
+const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger
+
+function DropdownMenuContent({ className, sideOffset = 8, align = 'end', ...props }) {
+  return (
+    <DropdownMenuPrimitive.Portal>
+      <DropdownMenuPrimitive.Content
+        sideOffset={sideOffset}
+        align={align}
+        className={cn(
+          'z-50 min-w-56 animate-fade-in rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lg',
+          className,
+        )}
+        {...props}
+      />
+    </DropdownMenuPrimitive.Portal>
+  )
+}
+
+function DropdownMenuItem({ className, ...props }) {
+  return (
+    <DropdownMenuPrimitive.Item
+      className={cn(
+        'flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[highlighted]:bg-secondary [&_svg]:size-4',
+        className,
+      )}
+      {...props}
+    />
+  )
+}
+
+function DropdownMenuLabel({ className, ...props }) {
+  return <DropdownMenuPrimitive.Label className={cn('px-3 py-2 text-sm', className)} {...props} />
+}
+
+function DropdownMenuSeparator({ className, ...props }) {
+  return (
+    <DropdownMenuPrimitive.Separator
+      className={cn('-mx-1.5 my-1.5 h-px bg-border', className)}
+      {...props}
+    />
+  )
+}
+
+export {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+}
+
+===== ./src/components/ui/input.jsx =====
+import { cn } from '@/lib/utils'
+
+const controlClasses =
+  'w-full rounded-lg border border-input bg-card text-sm text-foreground transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-ring/25 disabled:cursor-not-allowed disabled:opacity-60 aria-invalid:border-destructive'
+
+/** Wraps a control so an optional icon can sit inside its left edge. */
+function IconSlot({ icon, alignTop, children, className }) {
+  if (!icon) return <>{children}</>
+  return (
+    <div className={cn('relative', className)}>
+      <span
+        aria-hidden="true"
+        className={cn(
+          'pointer-events-none absolute left-3.5 flex text-foreground [&_svg]:size-5',
+          alignTop ? 'top-3' : 'top-1/2 -translate-y-1/2',
+        )}
+      >
+        {icon}
+      </span>
+      {children}
+    </div>
+  )
+}
+
+function Input({ className, icon, type = 'text', ...props }) {
+  return (
+    <IconSlot icon={icon}>
+      <input
+        type={type}
+        className={cn(controlClasses, 'h-11 px-3.5', icon && 'pl-11', className)}
+        {...props}
+      />
+    </IconSlot>
+  )
+}
+
+function Textarea({ className, icon, ...props }) {
+  return (
+    <IconSlot icon={icon} alignTop>
+      <textarea
+        className={cn(controlClasses, 'min-h-28 resize-y px-3.5 py-3', icon && 'pl-11', className)}
+        {...props}
+      />
+    </IconSlot>
+  )
+}
+
+/** Native <select>: fully accessible and uses the OS picker on mobile. */
+function NativeSelect({ className, icon, children, ...props }) {
+  return (
+    <IconSlot icon={icon}>
+      <select className={cn(controlClasses, 'h-11 px-3.5', icon && 'pl-11', className)} {...props}>
+        {children}
+      </select>
+    </IconSlot>
+  )
+}
+
+export { Input, NativeSelect, Textarea }
+
+===== ./src/components/ui/label.jsx =====
+import * as LabelPrimitive from '@radix-ui/react-label'
+import { cn } from '@/lib/utils'
+
+function Label({ className, ...props }) {
+  return (
+    <LabelPrimitive.Root
+      className={cn('text-sm leading-none font-semibold select-none', className)}
+      {...props}
+    />
+  )
+}
+
+export { Label }
+
+===== ./src/components/ui/sheet.jsx =====
+import * as DialogPrimitive from '@radix-ui/react-dialog'
+import { cn } from '@/lib/utils'
+import { DialogOverlay } from './dialog'
+
+const Sheet = DialogPrimitive.Root
+
+const SheetTitle = DialogPrimitive.Title
+
+const SheetDescription = DialogPrimitive.Description
+
+/** Slide-in panel from the left edge (used for the mobile navigation drawer). */
+function SheetContent({ className, children, ...props }) {
+  return (
+    <DialogPrimitive.Portal>
+      <DialogOverlay />
+      <DialogPrimitive.Content
+        className={cn(
+          'fixed inset-y-0 left-0 z-50 w-sidebar max-w-[85vw] animate-slide-in-left bg-sidebar text-sidebar-foreground shadow-xl',
+          className,
+        )}
+        {...props}
+      >
+        {children}
+      </DialogPrimitive.Content>
+    </DialogPrimitive.Portal>
+  )
+}
+
+export { Sheet, SheetContent, SheetDescription, SheetTitle }
+
+===== ./src/components/ui/skeleton.jsx =====
+import { cn } from '@/lib/utils'
+
+function Skeleton({ className, ...props }) {
+  return (
+    <div
+      aria-hidden="true"
+      className={cn('animate-pulse rounded-lg bg-muted', className)}
+      {...props}
+    />
+  )
+}
+
+export { Skeleton }
+
+===== ./src/features/auth/hooks.js =====
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { authApi } from './api/authApi'
+import { useAuthStore } from './store/authStore'
+
+export function useLogin() {
+  const setSession = useAuthStore((state) => state.setSession)
+  return useMutation({
+    mutationFn: (values) => authApi.login(values),
+    onSuccess: setSession,
+  })
+}
+
+export function useLogout() {
+  const clear = useAuthStore((state) => state.clear)
+  const queryClient = useQueryClient()
+  return () => {
+    void authApi.logout(useAuthStore.getState().accessToken)
+    clear()
+    queryClient.clear()
+  }
+}
+
+===== ./src/features/auth/redirect.js =====
+/** Only follow post-login redirects that stay inside the app. */
+export function safeRedirect(from) {
+  if (
+    typeof from === 'string' &&
+    from.startsWith('/') &&
+    !from.startsWith('//') &&
+    !from.startsWith('/login')
+  ) {
+    return from
+  }
+  return '/'
+}
+
+===== ./src/features/auth/types.js =====
+/**
+ * @typedef {Object} AuthUser
+ * @property {string} employeeId
+ * @property {string} name
+ * @property {string} [email]
+ * @property {string[]} roles
+ */
+
+/**
+ * @typedef {Object} AuthSession
+ * @property {AuthUser} user
+ * @property {string} accessToken
+ * @property {string} [refreshToken]
+ */
+
+export {}
+
+===== ./src/features/dashboard/hooks.js =====
+import { useQuery } from '@tanstack/react-query'
+import { dashboardApi } from './api/dashboardApi'
+
+export function useAnnouncements() {
+  return useQuery({
+    queryKey: ['announcements'],
+    queryFn: dashboardApi.announcements,
+  })
+}
+
+===== ./src/features/dashboard/types.js =====
+/**
+ * @typedef {Object} Announcement
+ * @property {string} id
+ * @property {string} message
+ */
+
+export {}
+
+===== ./src/features/gate-pass/hooks.js =====
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { gatePassApi } from './api/gatePassApi'
+
+export const gatePassKeys = {
+  all: ['gate-pass'],
+  list: (params) => [...gatePassKeys.all, 'list', params],
+  detail: (id) => [...gatePassKeys.all, 'detail', id],
+}
+
+export function useGatePassList(params) {
+  return useQuery({
+    queryKey: gatePassKeys.list(params),
+    queryFn: () => gatePassApi.list(params),
+    placeholderData: keepPreviousData,
+  })
+}
+
+export function useGatePass(id) {
+  return useQuery({
+    queryKey: gatePassKeys.detail(id ?? ''),
+    queryFn: () => gatePassApi.get(id ?? ''),
+    enabled: Boolean(id),
+  })
+}
+
+export function useCreateGatePass() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input) => gatePassApi.create(input),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: gatePassKeys.all }),
+  })
+}
+
+export function useUpdateGatePass(id) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input) => gatePassApi.update(id, input),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: gatePassKeys.all }),
+  })
+}
+
+===== ./src/features/gate-pass/types.js =====
+export const gatePassPurposes = ['Official', 'Personal', 'Business', 'Emergency', 'Other']
+
+export const gatePassStatuses = ['Pending', 'Approved', 'Rejected']
+
+/** @typedef {'Official' | 'Personal' | 'Business' | 'Emergency' | 'Other'} GatePassPurpose */
+
+/** @typedef {'Pending' | 'Approved' | 'Rejected'} GatePassStatus */
+
+/**
+ * @typedef {Object} GatePassRequest
+ * @property {string} id
+ * @property {string} place
+ * @property {string} dateTime Local date-time, "YYYY-MM-DDTHH:mm"
+ * @property {GatePassPurpose} purpose
+ * @property {string} contactPerson
+ * @property {string} reason
+ * @property {GatePassStatus} status Set by the server
+ * @property {string} createdOn ISO timestamp set by the server
+ */
+
+/**
+ * What the employee fills in: place, dateTime, purpose, contactPerson, reason.
+ * @typedef {Pick<GatePassRequest, 'place' | 'dateTime' | 'purpose' | 'contactPerson' | 'reason'>} GatePassInput
+ */
+
+/**
+ * @typedef {Object} GatePassFilters
+ * @property {string} from "YYYY-MM-DD" or ""
+ * @property {string} to
+ * @property {GatePassPurpose | ''} purpose
+ * @property {GatePassStatus | ''} status
+ */
+
+/**
+ * @typedef {GatePassFilters & { search: string, page: number, pageSize: number }} GatePassListParams
+ */
+
+/**
+ * @template T
+ * @typedef {Object} Paged
+ * @property {T[]} items
+ * @property {number} total
+ */
+
+export const emptyFilters = { from: '', to: '', purpose: '', status: '' }
+
+===== ./src/features/notifications/hooks.js =====
+import { useQuery } from '@tanstack/react-query'
+import { notificationsApi } from './api/notificationsApi'
+
+export const notificationKeys = {
+  all: ['notifications'],
+}
+
+export function useNotifications() {
+  return useQuery({
+    queryKey: notificationKeys.all,
+    queryFn: notificationsApi.list,
+    // Keep the bell badge reasonably fresh without hammering the API.
+    refetchInterval: 5 * 60_000,
+  })
+}
+
+===== ./src/features/notifications/types.js =====
+/** @typedef {'event' | 'hr' | 'holiday' | 'policy' | 'general'} NotificationCategory */
+
+/**
+ * @typedef {Object} PortalNotification
+ * @property {string} id
+ * @property {NotificationCategory} category
+ * @property {string} title
+ * @property {string} message
+ * @property {string} createdAt ISO timestamp
+ * @property {boolean} important
+ * @property {boolean} unread
+ */
+
+export {}
+
+===== ./src/features/auth/api/auth.schemas.js =====
+import { z } from 'zod'
+
+export const loginSchema = z.object({
+  employeeId: z.string().trim().min(1, 'Enter your employee ID or username.'),
+  password: z.string().min(1, 'Enter your password.'),
+})
+
+/**
+ * Shape we expect back from the .NET login API.
+ * If the real response differs, adjust ONLY this schema and `toSession` below.
+ */
+export const loginResponseSchema = z.object({
+  accessToken: z.string().min(1),
+  refreshToken: z.string().optional(),
+  user: z.object({
+    employeeId: z.string(),
+    name: z.string(),
+    email: z.string().optional(),
+    roles: z.array(z.string()).default(['employee']),
+  }),
+})
+
+===== ./src/features/auth/api/authApi.js =====
+import { endpoints } from '@/config/endpoints'
+import { ApiError } from '@/lib/api-error'
+import { http } from '@/lib/http'
+import { loginResponseSchema } from './auth.schemas'
+
+export const authApi = {
+  async login(values) {
+    if (__USE_MOCK__) {
+      const { mockLogin } = await import('./authMock')
+      return mockLogin(values)
+    }
+    // Request body: rename keys here if the .NET API expects e.g. `userName`.
+    const { data } = await http.post(endpoints.auth.login, {
+      employeeId: values.employeeId,
+      password: values.password,
+    })
+    const parsed = loginResponseSchema.safeParse(data)
+    if (!parsed.success) {
+      throw new ApiError('Unexpected response from the sign-in service.')
+    }
+    const { accessToken, refreshToken, user } = parsed.data
+    return { accessToken, refreshToken, user }
+  },
+  /** The token is passed explicitly because the local session is cleared right after this call. */
+  async logout(accessToken) {
+    if (__USE_MOCK__ || !accessToken) return
+    try {
+      await http.post(endpoints.auth.logout, null, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      })
+    } catch {
+      // The local session is cleared regardless of whether the server call worked.
+    }
+  },
+}
+
+===== ./src/features/auth/api/authMock.js =====
+import { ApiError } from '@/lib/api-error'
+
+/** Dev-only: accepts any employee ID with a non-empty password. */
+export async function mockLogin({ employeeId }) {
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  if (employeeId.toLowerCase() === 'locked') {
+    throw new ApiError('This account is locked. Please contact your IT administrator.', 403)
+  }
+  return {
+    accessToken: `mock-token-${employeeId}`,
+    refreshToken: `mock-refresh-${employeeId}`,
+    user: {
+      employeeId,
+      name: employeeId,
+      roles: ['employee', 'admin'],
+    },
+  }
+}
+
+===== ./src/features/auth/pages/LoginPage.jsx =====
+import { zodResolver } from '@hookform/resolvers/zod'
+import {
+  ArrowRight,
+  Bell,
+  Eye,
+  EyeOff,
+  LayoutGrid,
+  Lock,
+  ShieldCheck,
+  UserRound,
+} from 'lucide-react'
+import { useState } from 'react'
+import { useForm } from 'react-hook-form'
+import { Link } from 'react-router-dom'
+import { Logo } from '@/components/common/Logo'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { usePageMeta } from '@/hooks/usePageMeta'
+import { getErrorMessage } from '@/lib/api-error'
+import { loginSchema } from '../api/auth.schemas'
+import { useLogin } from '../hooks'
+
+const benefits = [
+  { icon: LayoutGrid, text: ['All Applications', 'in One Place'] },
+  { icon: Bell, text: ['Real-time', 'Announcements'] },
+  { icon: ShieldCheck, text: ['Secure &', 'Role-based Access'] },
+]
+
+export default function LoginPage() {
+  usePageMeta('Sign in', 'Sign in to the IB Group Employee Portal with your employee ID.')
+  const login = useLogin()
+  const [showPassword, setShowPassword] = useState(false)
+  const [forgotShown, setForgotShown] = useState(false)
+  const {
+    register,
+    handleSubmit,
+    formState: { errors },
+  } = useForm({
+    resolver: zodResolver(loginSchema),
+    defaultValues: { employeeId: '', password: '' },
+  })
+  // On success the session is stored and GuestRoute sends the user to where they were heading.
+  function onSubmit(values) {
+    setForgotShown(false)
+    login.mutate(values)
+  }
+  return (
+    <main className="grid min-h-screen bg-background lg:grid-cols-[46%_54%]">
+      <section className="relative flex flex-col overflow-hidden rounded-br-[3.75rem] px-[7vw] py-7 text-white bg-brand-gradient lg:min-h-screen lg:rounded-br-[7.5rem] lg:px-[clamp(2rem,6vw,6.5rem)] lg:py-12">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute top-[15%] -right-72 h-72 w-[38rem] -rotate-[24deg] rounded-full border border-white/15 ring-[35px] ring-white/[0.04]"
+        />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -right-[5%] -bottom-1 -left-[5%] h-20 bg-brand-highlight/80 [clip-path:polygon(0_42%,100%_0,100%_100%,0_100%)]"
+        />
+
+        <Link
+          to="/login"
+          className="relative z-10 flex items-center gap-3.5 text-2xl font-bold tracking-wide lg:text-3xl"
+        >
+          <Logo alt="" className="size-12 lg:size-14" />
+          <span>IB GROUP</span>
+        </Link>
+
+        <div className="relative z-10 my-auto max-w-lg py-10 lg:py-0 lg:pb-14">
+          <h1 className="text-4xl leading-tight font-bold tracking-tight lg:text-6xl">
+            IB Group
+            <br />
+            Employee Portal
+          </h1>
+          <span className="my-5 block h-1.5 w-24 rounded-full bg-brand-highlight" />
+          <p className="max-w-md text-lg leading-relaxed lg:text-xl">
+            A single platform to access workplace applications, services and information.
+          </p>
+        </div>
+
+        <ul className="relative z-10 mb-10 hidden max-w-xl grid-cols-3 text-center lg:grid">
+          {benefits.map(({ icon: Icon, text }) => (
+            <li key={text.join(' ')} className="border-r border-white/40 px-2.5 last:border-r-0">
+              <span className="inline-grid size-14 place-items-center rounded-2xl bg-white/15">
+                <Icon className="size-6" aria-hidden="true" />
+              </span>
+              <p className="mt-2.5 text-sm leading-snug">
+                {text[0]}
+                <br />
+                {text[1]}
+              </p>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section className="flex flex-col items-center justify-center px-5 py-10 lg:px-8 lg:py-12">
+        <form
+          onSubmit={handleSubmit(onSubmit)}
+          noValidate
+          className="w-full max-w-2xl rounded-3xl border border-border bg-card/95 px-6 pt-8 pb-10 shadow-xl sm:px-14"
+        >
+          <Logo className="mx-auto mb-5 size-24 shadow-md sm:size-28" />
+          <h2 className="text-center text-3xl font-bold tracking-tight sm:text-4xl">
+            Welcome Back
+          </h2>
+          <p className="mt-2.5 mb-8 text-center text-muted-foreground sm:text-lg">
+            Sign in to your IB Group Employee Portal
+          </p>
+
+          <div className="space-y-5">
+            <div className="space-y-2">
+              <Label htmlFor="employeeId">
+                Employee ID / Username <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                id="employeeId"
+                icon={<UserRound />}
+                autoComplete="username"
+                placeholder="Enter your employee ID or username"
+                aria-invalid={errors.employeeId ? true : undefined}
+                aria-describedby={errors.employeeId ? 'employeeId-error' : undefined}
+                className="h-14"
+                {...register('employeeId')}
+              />
+              {errors.employeeId && (
+                <p id="employeeId-error" className="text-sm text-destructive">
+                  {errors.employeeId.message}
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="password">
+                Password <span className="text-destructive">*</span>
+              </Label>
+              <div className="relative">
+                <Input
+                  id="password"
+                  icon={<Lock />}
+                  type={showPassword ? 'text' : 'password'}
+                  autoComplete="current-password"
+                  placeholder="Enter your password"
+                  aria-invalid={errors.password ? true : undefined}
+                  aria-describedby={errors.password ? 'password-error' : undefined}
+                  className="h-14 pr-12"
+                  {...register('password')}
+                />
+                <button
+                  type="button"
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  aria-pressed={showPassword}
+                  onClick={() => setShowPassword((value) => !value)}
+                  className="absolute top-1/2 right-3 -translate-y-1/2 rounded p-1 text-muted-foreground hover:text-foreground"
+                >
+                  {showPassword ? (
+                    <EyeOff className="size-5" aria-hidden="true" />
+                  ) : (
+                    <Eye className="size-5" aria-hidden="true" />
+                  )}
+                </button>
+              </div>
+              {errors.password && (
+                <p id="password-error" className="text-sm text-destructive">
+                  {errors.password.message}
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-4 mb-6 text-right">
+            <button
+              type="button"
+              onClick={() => setForgotShown(true)}
+              className="font-semibold text-primary hover:underline"
+            >
+              Forgot Password?
+            </button>
+          </div>
+
+          {forgotShown && (
+            <p
+              role="status"
+              className="mb-4 rounded-lg bg-primary-soft px-3 py-2 text-sm text-primary-soft-foreground"
+            >
+              Please contact your IT administrator to reset your password.
+            </p>
+          )}
+          {login.isError && (
+            <p
+              role="alert"
+              className="mb-4 rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger"
+            >
+              {getErrorMessage(login.error)}
+            </p>
+          )}
+
+          <Button
+            type="submit"
+            size="lg"
+            className="h-14 w-full text-lg"
+            disabled={login.isPending}
+          >
+            {login.isPending ? 'Signing in...' : 'Login'}
+            {!login.isPending && <ArrowRight aria-hidden="true" className="size-5" />}
+          </Button>
+        </form>
+        <p className="mt-7 text-center text-sm text-muted-foreground">
+          &copy; {new Date().getFullYear()} IB Group. All Rights Reserved.
+        </p>
+      </section>
+    </main>
+  )
+}
+
+===== ./src/features/auth/store/authStore.js =====
+import { create } from 'zustand'
+import { createJSONStorage, persist } from 'zustand/middleware'
+
+/**
+ * Signed-in session. Persisted so a page refresh keeps the user signed in.
+ * To keep tokens only for the browser tab's lifetime, swap `localStorage` for `sessionStorage`.
+ */
+export const useAuthStore = create()(
+  persist(
+    (set) => ({
+      user: null,
+      accessToken: null,
+      refreshToken: null,
+      setSession: ({ user, accessToken, refreshToken }) =>
+        set({ user, accessToken, refreshToken: refreshToken ?? null }),
+      setTokens: ({ accessToken, refreshToken }) =>
+        set((state) => ({ accessToken, refreshToken: refreshToken ?? state.refreshToken })),
+      clear: () => set({ user: null, accessToken: null, refreshToken: null }),
+    }),
+    {
+      name: 'ib-portal-auth',
+      storage: createJSONStorage(() => window.localStorage),
+      partialize: ({ user, accessToken, refreshToken }) => ({ user, accessToken, refreshToken }),
+    },
+  ),
+)
+
+export const selectIsAuthenticated = (state) => Boolean(state.user && state.accessToken)
+
+===== ./src/features/dashboard/api/dashboardApi.js =====
+import { endpoints } from '@/config/endpoints'
+import { http } from '@/lib/http'
+
+export const dashboardApi = {
+  async announcements() {
+    if (__USE_MOCK__) {
+      const { mockAnnouncements } = await import('./dashboardMock')
+      return mockAnnouncements()
+    }
+    const { data } = await http.get(endpoints.dashboard.announcements)
+    return data
+  },
+}
+
+===== ./src/features/dashboard/api/dashboardMock.js =====
+export async function mockAnnouncements() {
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  return [
+    { id: 'a-1', message: 'IB Group Annual Townhall on 28 Nov 2026 at 4:00 PM.' },
+    {
+      id: 'a-2',
+      message: 'Holiday: Office will remain closed on 25 Nov 2026 (Guru Nanak Jayanti).',
+    },
+  ]
+}
+
+===== ./src/features/dashboard/components/AnnouncementBar.jsx =====
+import { ChevronLeft, ChevronRight, Megaphone } from 'lucide-react'
+import { useState } from 'react'
+import { useAnnouncements } from '../hooks'
+
+export function AnnouncementBar() {
+  const { data: announcements = [] } = useAnnouncements()
+  const [index, setIndex] = useState(0)
+  if (announcements.length === 0) return null
+  const count = announcements.length
+  const current = announcements[index % count]
+  const next = count > 1 ? announcements[(index + 1) % count] : undefined
+  return (
+    <section
+      aria-label="Announcements"
+      className="flex min-h-14 items-center gap-3 overflow-hidden rounded-2xl bg-primary-soft px-4 py-2 text-foreground shadow-sm sm:gap-4 sm:px-5"
+    >
+      <Megaphone className="size-6 shrink-0 text-primary" aria-hidden="true" />
+      <b className="shrink-0 text-base text-primary-soft-foreground sm:text-lg">Announcement:</b>
+      <span aria-hidden="true" className="hidden text-primary sm:inline">
+        |
+      </span>
+      <p aria-live="polite" className="min-w-0 flex-1 truncate text-sm">
+        {current?.message}
+      </p>
+      {next && (
+        <>
+          <span
+            aria-hidden="true"
+            className="hidden size-2.5 shrink-0 rounded-full bg-primary xl:block"
+          />
+          <p aria-hidden="true" className="hidden min-w-0 flex-1 truncate text-sm xl:block">
+            {next.message}
+          </p>
+        </>
+      )}
+      {count > 1 && (
+        <div className="flex shrink-0 gap-1.5">
+          <button
+            type="button"
+            aria-label="Previous announcement"
+            onClick={() => setIndex((index + count - 1) % count)}
+            className="grid h-9 w-9 place-items-center rounded-lg border border-primary/20 bg-card text-primary hover:bg-secondary"
+          >
+            <ChevronLeft className="size-5" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            aria-label="Next announcement"
+            onClick={() => setIndex((index + 1) % count)}
+            className="grid h-9 w-9 place-items-center rounded-lg border border-primary/20 bg-card text-primary hover:bg-secondary"
+          >
+            <ChevronRight className="size-5" aria-hidden="true" />
+          </button>
+        </div>
+      )}
+    </section>
+  )
+}
+
+===== ./src/features/dashboard/components/ApplicationsPanel.jsx =====
+import { LayoutGrid } from 'lucide-react'
+import { useState } from 'react'
+import { EmptyState } from '@/components/common/EmptyState'
+import { Logo } from '@/components/common/Logo'
+import { Card } from '@/components/ui/card'
+import { NativeSelect } from '@/components/ui/input'
+import { applications } from '@/config/applications'
+import { cn } from '@/lib/utils'
+import { useUiStore } from '@/stores/uiStore'
+
+const ALL = 'All Applications'
+
+const groups = [...new Set(applications.map((app) => app.group))]
+// Full class names (not built dynamically) so Tailwind can detect them.
+const toneClasses = {
+  orange: 'border-tone-orange-border bg-gradient-to-br from-card to-tone-orange-bg',
+  green: 'border-tone-green-border bg-gradient-to-br from-card to-tone-green-bg',
+  purple: 'border-tone-purple-border bg-gradient-to-br from-card to-tone-purple-bg',
+  rose: 'border-tone-rose-border bg-gradient-to-br from-card to-tone-rose-bg',
+  teal: 'border-tone-teal-border bg-gradient-to-br from-card to-tone-teal-bg',
+  amber: 'border-tone-amber-border bg-gradient-to-br from-card to-tone-amber-bg',
+  blue: 'border-tone-blue-border bg-gradient-to-br from-card to-tone-blue-bg',
+}
+
+const tileClasses =
+  'flex h-32 flex-col items-center justify-center gap-2 rounded-2xl border p-2.5 text-center transition hover:-translate-y-0.5 hover:shadow-md sm:h-36'
+
+function ApplicationTile({ app }) {
+  const content = (
+    <>
+      <span className="grid size-14 place-items-center rounded-full bg-card/70 text-lg font-extrabold text-primary shadow-sm sm:size-16">
+        {app.useLogo ? <Logo alt="" className="size-full" /> : app.mark}
+      </span>
+      <b className="text-xs leading-tight uppercase sm:text-sm">{app.name}</b>
+    </>
+  )
+  if (!app.href) {
+    return (
+      <button
+        type="button"
+        disabled
+        title="This application link is not available yet"
+        className={cn(
+          tileClasses,
+          toneClasses[app.tone],
+          'cursor-not-allowed opacity-75 hover:translate-y-0 hover:shadow-none',
+        )}
+      >
+        {content}
+      </button>
+    )
+  }
+  return (
+    <a
+      href={app.href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={cn(tileClasses, toneClasses[app.tone])}
+    >
+      {content}
+      <span className="sr-only">(opens in a new tab)</span>
+    </a>
+  )
+}
+
+export function ApplicationsPanel() {
+  const search = useUiStore((state) => state.applicationSearch)
+  const [group, setGroup] = useState(ALL)
+  const query = search.trim().toLowerCase()
+  const visible = applications.filter(
+    (app) => app.name.toLowerCase().includes(query) && (group === ALL || app.group === group),
+  )
+  return (
+    <Card role="region" aria-labelledby="applications-heading" className="p-4 pb-5">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <h2
+          id="applications-heading"
+          className="flex items-center gap-2.5 text-xl font-bold tracking-tight"
+        >
+          <LayoutGrid className="size-6 text-primary" aria-hidden="true" /> IB Group Applications
+        </h2>
+        <NativeSelect
+          aria-label="Filter applications by category"
+          value={group}
+          onChange={(event) => setGroup(event.target.value)}
+          className="max-w-48"
+        >
+          <option>{ALL}</option>
+          {groups.map((name) => (
+            <option key={name}>{name}</option>
+          ))}
+        </NativeSelect>
+      </div>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        {visible.map((app) => (
+          <ApplicationTile key={app.id} app={app} />
+        ))}
+        {visible.length === 0 && <EmptyState>No applications match your search.</EmptyState>}
+      </div>
+    </Card>
+  )
+}
+
+===== ./src/features/dashboard/pages/DashboardPage.jsx =====
+import { usePageMeta } from '@/hooks/usePageMeta'
+import { useAuthStore } from '@/features/auth/store/authStore'
+import { NotificationsPanel } from '@/features/notifications/components/NotificationsPanel'
+import { AnnouncementBar } from '../components/AnnouncementBar'
+import { ApplicationsPanel } from '../components/ApplicationsPanel'
+
+export default function DashboardPage() {
+  usePageMeta('Home', 'Your IB Group applications, announcements and notifications in one place.')
+  const user = useAuthStore((state) => state.user)
+  return (
+    <>
+      <AnnouncementBar />
+      <div className="mt-6 grid items-start gap-5 xl:grid-cols-[minmax(0,1.58fr)_minmax(22rem,1fr)]">
+        <div className="min-w-0">
+          <div className="mb-4 px-1">
+            <h1 className="text-2xl font-bold tracking-tight sm:text-4xl">
+              Welcome back, {user?.name ?? 'Employee'}
+            </h1>
+            <p className="mt-1.5 text-muted-foreground">
+              Access and manage all IB Group applications from one place.
+            </p>
+          </div>
+          <ApplicationsPanel />
+        </div>
+        <NotificationsPanel />
+      </div>
+    </>
+  )
+}
+
+===== ./src/features/errors/pages/ForbiddenPage.jsx =====
+import { Link } from 'react-router-dom'
+import { Button } from '@/components/ui/button'
+import { usePageMeta } from '@/hooks/usePageMeta'
+
+export default function ForbiddenPage() {
+  usePageMeta('Access denied', 'You do not have permission to view this page.')
+  return (
+    <section className="mx-auto flex max-w-xl flex-col items-center px-4 py-16 text-center">
+      <h1 className="text-3xl font-bold tracking-tight">Access denied</h1>
+      <p className="mt-3 text-muted-foreground">
+        You do not have permission to view this page. If you think this is a mistake, contact your
+        administrator.
+      </p>
+      <Button asChild className="mt-8">
+        <Link to="/">Back to Home</Link>
+      </Button>
+    </section>
+  )
+}
+
+===== ./src/features/errors/pages/NotFoundPage.jsx =====
+import { Link } from 'react-router-dom'
+import { Button } from '@/components/ui/button'
+import { usePageMeta } from '@/hooks/usePageMeta'
+
+export default function NotFoundPage() {
+  usePageMeta('Page not found', 'The page you are looking for does not exist or has moved.')
+  return (
+    <section className="mx-auto flex max-w-xl flex-col items-center px-4 py-16 text-center">
+      <p className="text-6xl font-extrabold text-primary" aria-hidden="true">
+        404
+      </p>
+      <h1 className="mt-4 text-3xl font-bold tracking-tight">Page not found</h1>
+      <p className="mt-3 text-muted-foreground">
+        The page you are looking for does not exist or has moved. Check the address or head back to
+        the portal home.
+      </p>
+      <Button asChild className="mt-8">
+        <Link to="/">Back to Home</Link>
+      </Button>
+    </section>
+  )
+}
+
+===== ./src/features/errors/pages/RouteErrorPage.jsx =====
+import { isRouteErrorResponse, Link, useRouteError } from 'react-router-dom'
+import { Button } from '@/components/ui/button'
+import { usePageMeta } from '@/hooks/usePageMeta'
+
+/** Shown by the router when a page crashes or fails to load (e.g. after a new deployment). */
+export default function RouteErrorPage() {
+  usePageMeta('Something went wrong', 'An unexpected error occurred.')
+  const error = useRouteError()
+  if (!isRouteErrorResponse(error)) {
+    console.error(error)
+  }
+  return (
+    <main className="mx-auto flex min-h-screen max-w-xl flex-col items-center justify-center px-4 text-center">
+      <h1 className="text-3xl font-bold tracking-tight">Something went wrong</h1>
+      <p className="mt-3 text-muted-foreground">
+        The page could not be displayed. Reloading usually fixes this.
+      </p>
+      <div className="mt-8 flex gap-3">
+        <Button onClick={() => window.location.reload()}>Reload page</Button>
+        <Button asChild variant="outline">
+          <Link to="/">Go to Home</Link>
+        </Button>
+      </div>
+    </main>
+  )
+}
+
+===== ./src/features/gate-pass/api/gatePass.schemas.js =====
+import { z } from 'zod'
+import { gatePassPurposes } from '../types'
+
+export const gatePassFormSchema = z.object({
+  place: z
+    .string()
+    .trim()
+    .min(1, 'Enter the place.')
+    .max(150, 'Place is too long (max 150 characters).'),
+  dateTime: z.string().min(1, 'Select the date and time.'),
+  contactPerson: z
+    .string()
+    .trim()
+    .min(1, 'Enter the contact person.')
+    .max(100, 'Name is too long (max 100 characters).'),
+  // Starts as "" (nothing selected); the pipe turns it into a typed purpose or a friendly error.
+  purpose: z.string().pipe(z.enum(gatePassPurposes, { error: 'Select the purpose of visit.' })),
+  reason: z
+    .string()
+    .trim()
+    .min(1, 'Enter the reason for the visit.')
+    .max(500, 'Reason is too long (max 500 characters).'),
+})
+
+export const REASON_MAX_LENGTH = 500
+
+===== ./src/features/gate-pass/api/gatePass.schemas.test.js =====
+import { describe, expect, it } from 'vitest'
+import { gatePassFormSchema } from './gatePass.schemas'
+
+const valid = {
+  place: ' Plant ',
+  dateTime: '2026-12-01T10:00',
+  contactPerson: 'A. Kumar',
+  purpose: 'Official',
+  reason: 'Audit visit',
+}
+describe('gatePassFormSchema', () => {
+  it('accepts a complete request and trims text', () => {
+    const result = gatePassFormSchema.safeParse(valid)
+    expect(result.success && result.data.place).toBe('Plant')
+  })
+  it('asks for a purpose when none is selected', () => {
+    const result = gatePassFormSchema.safeParse({ ...valid, purpose: '' })
+    expect(result.success).toBe(false)
+    expect(result.error?.issues[0]?.message).toBe('Select the purpose of visit.')
+  })
+  it('rejects a reason over 500 characters', () => {
+    expect(gatePassFormSchema.safeParse({ ...valid, reason: 'x'.repeat(501) }).success).toBe(false)
+  })
+})
+
+===== ./src/features/gate-pass/api/gatePassApi.js =====
+import { endpoints } from '@/config/endpoints'
+import { http } from '@/lib/http'
+
+/**
+ * Gate pass calls. Query parameter names and the `{ items, total }` list shape are the
+ * contract assumed for the .NET API - adjust here if the controller differs.
+ */
+export const gatePassApi = {
+  async list(params) {
+    if (__USE_MOCK__) return (await import('./gatePassMock')).mockList(params)
+    const { data } = await http.get(endpoints.gatePass.collection, {
+      params: {
+        search: params.search || undefined,
+        from: params.from || undefined,
+        to: params.to || undefined,
+        purpose: params.purpose || undefined,
+        status: params.status || undefined,
+        page: params.page,
+        pageSize: params.pageSize,
+      },
+    })
+    return data
+  },
+  async get(id) {
+    if (__USE_MOCK__) return (await import('./gatePassMock')).mockGet(id)
+    const { data } = await http.get(endpoints.gatePass.item(id))
+    return data
+  },
+  async create(input) {
+    if (__USE_MOCK__) return (await import('./gatePassMock')).mockCreate(input)
+    const { data } = await http.post(endpoints.gatePass.collection, input)
+    return data
+  },
+  async update(id, input) {
+    if (__USE_MOCK__) return (await import('./gatePassMock')).mockUpdate(id, input)
+    const { data } = await http.put(endpoints.gatePass.item(id), input)
+    return data
+  },
+}
+
+===== ./src/features/gate-pass/api/gatePassMock.js =====
+import { ApiError } from '@/lib/api-error'
+import { readJson, writeJson } from '@/lib/storage'
+
+const STORAGE_KEY = 'ib-gate-pass-requests'
+
+const seed = [
+  {
+    id: 'GP-1001',
+    place: 'Home',
+    dateTime: '2026-11-16T13:30',
+    purpose: 'Personal',
+    contactPerson: 'Self',
+    reason: 'Personal visit',
+    status: 'Approved',
+    createdOn: '2026-11-16T11:57:00.000Z',
+  },
+]
+
+const delay = () => new Promise((resolve) => setTimeout(resolve, 250))
+
+function load() {
+  return readJson(STORAGE_KEY) ?? seed
+}
+
+function save(items) {
+  writeJson(STORAGE_KEY, items)
+}
+
+export async function mockList(params) {
+  await delay()
+  const search = params.search.trim().toLowerCase()
+  const filtered = load().filter((item) => {
+    const date = item.dateTime.slice(0, 10)
+    return (
+      [item.place, item.purpose, item.contactPerson, item.status]
+        .join(' ')
+        .toLowerCase()
+        .includes(search) &&
+      (!params.from || date >= params.from) &&
+      (!params.to || date <= params.to) &&
+      (!params.purpose || item.purpose === params.purpose) &&
+      (!params.status || item.status === params.status)
+    )
+  })
+  const start = (params.page - 1) * params.pageSize
+  return { items: filtered.slice(start, start + params.pageSize), total: filtered.length }
+}
+
+export async function mockGet(id) {
+  await delay()
+  const found = load().find((item) => item.id === id)
+  if (!found) throw new ApiError('Gate pass request not found.', 404)
+  return found
+}
+
+export async function mockCreate(input) {
+  await delay()
+  const created = {
+    ...input,
+    id: `GP-${Date.now()}`,
+    status: 'Pending',
+    createdOn: new Date().toISOString(),
+  }
+  save([created, ...load()])
+  return created
+}
+
+export async function mockUpdate(id, input) {
+  await delay()
+  const items = load()
+  const existing = items.find((item) => item.id === id)
+  if (!existing) throw new ApiError('Gate pass request not found.', 404)
+  const updated = { ...existing, ...input }
+  save(items.map((item) => (item.id === id ? updated : item)))
+  return updated
+}
+
+===== ./src/features/gate-pass/components/GateIllustration.jsx =====
+/** Decorative office-entrance picture. Colours come from the theme classes. */
+export function GateIllustration() {
+  return (
+    <svg
+      className="mx-auto mb-2 block h-40 w-full max-w-[22rem]"
+      viewBox="0 0 420 180"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <circle cx="218" cy="96" r="80" className="fill-primary-soft" />
+      <path
+        d="M47 153h330"
+        className="stroke-brand-highlight"
+        strokeWidth="5"
+        strokeLinecap="round"
+        fill="none"
+      />
+      <rect
+        x="152"
+        y="75"
+        width="104"
+        height="78"
+        className="fill-card stroke-input"
+        strokeWidth="3"
+      />
+      <rect x="144" y="70" width="120" height="18" rx="5" className="fill-primary" />
+      <rect
+        x="164"
+        y="94"
+        width="29"
+        height="35"
+        className="fill-secondary stroke-brand-light"
+        strokeWidth="3"
+      />
+      <rect
+        x="213"
+        y="94"
+        width="29"
+        height="35"
+        className="fill-secondary stroke-brand-light"
+        strokeWidth="3"
+      />
+      <path
+        d="M276 85v54m0-33h83"
+        className="stroke-primary"
+        strokeWidth="7"
+        strokeLinecap="round"
+        fill="none"
+      />
+      <path d="M41 153c16-22 31-20 42 0m245 0c14-24 29-24 44 0" className="fill-brand-highlight" />
+      <circle cx="65" cy="140" r="9" className="fill-brand-highlight" />
+      <circle cx="344" cy="142" r="10" className="fill-brand-highlight" />
+    </svg>
+  )
+}
+
+===== ./src/features/gate-pass/components/GatePassDetailsDialog.jsx =====
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
+import { formatDateTime } from '@/lib/date'
+import { GatePassStatusBadge } from './GatePassStatusBadge'
+
+export function GatePassDetailsDialog({ request, onClose }) {
+  return (
+    <Dialog open={request !== null} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent>
+        {request && (
+          <>
+            <DialogTitle>Gate Pass Request</DialogTitle>
+            <DialogDescription className="mt-1">Request {request.id}</DialogDescription>
+            <dl className="mt-5 grid gap-3.5">
+              {[
+                ['Place', request.place],
+                ['Date & Time', formatDateTime(request.dateTime)],
+                ['Purpose', request.purpose],
+                ['Contact Person', request.contactPerson],
+                ['Reason', request.reason],
+              ].map(([key, value]) => (
+                <div key={key} className="grid grid-cols-[8.5rem_1fr] gap-2.5">
+                  <dt className="text-muted-foreground">{key}</dt>
+                  <dd className="font-semibold break-words">{value || '-'}</dd>
+                </div>
+              ))}
+              <div className="grid grid-cols-[8.5rem_1fr] items-center gap-2.5">
+                <dt className="text-muted-foreground">Status</dt>
+                <dd>
+                  <GatePassStatusBadge status={request.status} />
+                </dd>
+              </div>
+            </dl>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+===== ./src/features/gate-pass/components/GatePassForm.jsx =====
+import { zodResolver } from '@hookform/resolvers/zod'
+import {
+  ArrowRight,
+  CalendarDays,
+  Info,
+  Layers,
+  MapPin,
+  MessageSquare,
+  UserRound,
+} from 'lucide-react'
+import { useForm, useWatch } from 'react-hook-form'
+import { Button } from '@/components/ui/button'
+import { Input, NativeSelect, Textarea } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { getErrorMessage } from '@/lib/api-error'
+import { gatePassFormSchema, REASON_MAX_LENGTH } from '../api/gatePass.schemas'
+import { gatePassPurposes } from '../types'
+import { GateIllustration } from './GateIllustration'
+
+function Field({ id, label, error, hint, children }) {
+  return (
+    <div className="grid gap-1.5 md:grid-cols-[11rem_minmax(0,1fr)] md:gap-x-5">
+      <Label htmlFor={id} className="md:pt-3.5">
+        {label} <span className="text-destructive">*</span>
+      </Label>
+      <div className="space-y-1.5">
+        {children}
+        {error && (
+          <p id={`${id}-error`} className="text-sm text-destructive">
+            {error}
+          </p>
+        )}
+        {hint}
+      </div>
+    </div>
+  )
+}
+
+export function GatePassForm({
+  defaultValues,
+  mode,
+  isSubmitting,
+  submitError,
+  onSubmit,
+  onCancel,
+}) {
+  const {
+    register,
+    handleSubmit,
+    control,
+    formState: { errors },
+  } = useForm({
+    resolver: zodResolver(gatePassFormSchema),
+    defaultValues,
+  })
+  const reason = useWatch({ control, name: 'reason' }) ?? ''
+  const invalid = (name) => (errors[name] ? true : undefined)
+  const describedBy = (name) => (errors[name] ? `${name}-error` : undefined)
+  return (
+    <form onSubmit={handleSubmit(onSubmit)} noValidate>
+      <div className="grid gap-8 px-5 py-7 sm:px-8 lg:grid-cols-[minmax(0,1.3fr)_minmax(18rem,0.7fr)] lg:gap-11">
+        <div className="grid content-start gap-6">
+          <Field id="place" label="Place" error={errors.place?.message}>
+            <Input
+              id="place"
+              icon={<MapPin />}
+              placeholder="Enter place (e.g., Plant, Office, Warehouse)"
+              aria-invalid={invalid('place')}
+              aria-describedby={describedBy('place')}
+              {...register('place')}
+            />
+          </Field>
+          <Field id="dateTime" label="Date & Time" error={errors.dateTime?.message}>
+            <Input
+              id="dateTime"
+              type="datetime-local"
+              icon={<CalendarDays />}
+              aria-invalid={invalid('dateTime')}
+              aria-describedby={describedBy('dateTime')}
+              {...register('dateTime')}
+            />
+          </Field>
+          <Field id="contactPerson" label="Contact Person" error={errors.contactPerson?.message}>
+            <Input
+              id="contactPerson"
+              icon={<UserRound />}
+              placeholder="Enter contact person name"
+              aria-invalid={invalid('contactPerson')}
+              aria-describedby={describedBy('contactPerson')}
+              {...register('contactPerson')}
+            />
+          </Field>
+          <Field id="purpose" label="Purpose" error={errors.purpose?.message}>
+            <NativeSelect
+              id="purpose"
+              icon={<Layers />}
+              aria-invalid={invalid('purpose')}
+              aria-describedby={describedBy('purpose')}
+              {...register('purpose')}
+            >
+              <option value="">Select purpose of visit</option>
+              {gatePassPurposes.map((purpose) => (
+                <option key={purpose} value={purpose}>
+                  {purpose}
+                </option>
+              ))}
+            </NativeSelect>
+          </Field>
+          <Field
+            id="reason"
+            label="Reason"
+            error={errors.reason?.message}
+            hint={
+              <small className="block text-muted-foreground">
+                {REASON_MAX_LENGTH - reason.length} characters remaining
+              </small>
+            }
+          >
+            <Textarea
+              id="reason"
+              icon={<MessageSquare />}
+              maxLength={REASON_MAX_LENGTH}
+              placeholder={`Enter the reason for visit (max ${REASON_MAX_LENGTH} characters)`}
+              aria-invalid={invalid('reason')}
+              aria-describedby={describedBy('reason')}
+              {...register('reason')}
+            />
+          </Field>
+          {submitError != null && (
+            <p role="alert" className="rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">
+              {getErrorMessage(submitError)}
+            </p>
+          )}
+        </div>
+
+        <aside className="border-border pt-6 text-center lg:border-l lg:pt-0 lg:pl-9">
+          <GateIllustration />
+          <h2 className="mb-2 text-xl font-bold">Gate Pass Request</h2>
+          <p className="mx-auto max-w-sm text-sm leading-relaxed text-muted-foreground">
+            Use this form to raise a gate pass request for plant, office or other authorized visits.
+          </p>
+          <div className="mt-6 rounded-2xl bg-primary-soft p-5 text-left">
+            <h3 className="mb-2.5 flex items-center gap-2.5 font-bold text-primary-soft-foreground">
+              <Info className="size-5" aria-hidden="true" /> Important
+            </h3>
+            <ul className="grid list-disc gap-2 pl-6 text-sm leading-snug">
+              <li>Provide accurate visit details.</li>
+              <li>Ensure the contact person is available.</li>
+              <li>Gate pass will be subject to approval.</li>
+            </ul>
+          </div>
+        </aside>
+      </div>
+
+      <footer className="flex justify-end gap-3 border-t border-border px-5 py-4 sm:px-8">
+        <Button
+          type="button"
+          variant="outline"
+          className="min-w-28 max-sm:flex-1"
+          onClick={onCancel}
+        >
+          Cancel
+        </Button>
+        <Button type="submit" disabled={isSubmitting} className="min-w-52 max-sm:flex-1">
+          {isSubmitting ? 'Saving...' : mode === 'edit' ? 'Save Changes' : 'Submit Request'}
+          {!isSubmitting && <ArrowRight aria-hidden="true" />}
+        </Button>
+      </footer>
+    </form>
+  )
+}
+
+===== ./src/features/gate-pass/components/GatePassStatusBadge.jsx =====
+import { CircleCheck, Clock, CircleX } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
+
+const config = {
+  Approved: { variant: 'success', icon: CircleCheck },
+  Pending: { variant: 'warning', icon: Clock },
+  Rejected: { variant: 'danger', icon: CircleX },
+}
+
+export function GatePassStatusBadge({ status }) {
+  const { variant, icon: Icon } = config[status]
+  return (
+    <Badge variant={variant}>
+      <Icon aria-hidden="true" />
+      {status}
+    </Badge>
+  )
+}
+
+===== ./src/features/gate-pass/pages/GatePassFormPage.jsx =====
+import { IdCard } from 'lucide-react'
+import { useNavigate, useParams } from 'react-router-dom'
+import { PageBreadcrumbs } from '@/components/layout/PageBreadcrumbs'
+import { PageHero } from '@/components/layout/PageHero'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { Skeleton } from '@/components/ui/skeleton'
+import { usePageMeta } from '@/hooks/usePageMeta'
+import { getErrorMessage, toApiError } from '@/lib/api-error'
+import { GatePassForm } from '../components/GatePassForm'
+import { useCreateGatePass, useGatePass, useUpdateGatePass } from '../hooks'
+
+const blankForm = {
+  place: '',
+  dateTime: '',
+  contactPerson: '',
+  purpose: '',
+  reason: '',
+}
+
+export default function GatePassFormPage() {
+  const { id } = useParams()
+  const isEdit = Boolean(id)
+  const title = isEdit ? 'Edit Gate Pass Request' : 'Create Gate Pass Request'
+  usePageMeta(title, 'Raise or update a gate pass request for an official or personal visit.')
+  const navigate = useNavigate()
+  const existing = useGatePass(id)
+  const create = useCreateGatePass()
+  const update = useUpdateGatePass(id ?? '')
+  const mutation = isEdit ? update : create
+  function goToList(notice) {
+    void navigate('/gate-pass', { state: notice ? { notice } : undefined })
+  }
+  function handleSubmit(values) {
+    mutation.mutate(values, {
+      onSuccess: () =>
+        goToList(
+          isEdit ? 'Gate pass request updated.' : 'Gate pass request submitted for approval.',
+        ),
+    })
+  }
+  let body
+  if (isEdit && existing.isPending) {
+    body = (
+      <div className="space-y-4 p-8" role="status">
+        <span className="sr-only">Loading request</span>
+        {[0, 1, 2, 3].map((i) => (
+          <Skeleton key={i} className="h-12" />
+        ))}
+      </div>
+    )
+  } else if (isEdit && existing.isError) {
+    const status = toApiError(existing.error).status
+    body = (
+      <div role="alert" className="p-8 text-center">
+        <p className="font-semibold">
+          {status === 404
+            ? 'This gate pass request could not be found.'
+            : getErrorMessage(existing.error)}
+        </p>
+        <Button className="mt-5" onClick={() => goToList()}>
+          Back to Gate Pass
+        </Button>
+      </div>
+    )
+  } else {
+    const defaults = existing.data
+      ? {
+          place: existing.data.place,
+          dateTime: existing.data.dateTime,
+          contactPerson: existing.data.contactPerson,
+          purpose: existing.data.purpose,
+          reason: existing.data.reason,
+        }
+      : blankForm
+    body = (
+      <GatePassForm
+        defaultValues={defaults}
+        mode={isEdit ? 'edit' : 'create'}
+        isSubmitting={mutation.isPending}
+        submitError={mutation.error}
+        onSubmit={handleSubmit}
+        onCancel={() => goToList()}
+      />
+    )
+  }
+  return (
+    <div className="mx-auto max-w-[100rem]">
+      <PageBreadcrumbs items={[{ label: 'Gate Pass', to: '/gate-pass' }, { label: title }]} />
+      <Card className="overflow-hidden">
+        <PageHero
+          variant="embedded"
+          icon={<IdCard />}
+          title={title}
+          description="Raise a new gate pass request for official or personal visit."
+        />
+        {body}
+      </Card>
+    </div>
+  )
+}
+
+===== ./src/features/gate-pass/pages/GatePassListPage.jsx =====
+import { useAbility } from '@casl/react'
+import { Eye, IdCard, ListFilter, Pencil, Plus, RotateCcw, Search, X } from 'lucide-react'
+import { useState } from 'react'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { EmptyState } from '@/components/common/EmptyState'
+import { PageBreadcrumbs } from '@/components/layout/PageBreadcrumbs'
+import { PageHero } from '@/components/layout/PageHero'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { Input, NativeSelect } from '@/components/ui/input'
+import { Skeleton } from '@/components/ui/skeleton'
+import { useDebouncedValue } from '@/hooks/useDebouncedValue'
+import { usePageMeta } from '@/hooks/usePageMeta'
+import { getErrorMessage } from '@/lib/api-error'
+import { formatDateTime } from '@/lib/date'
+import { GatePassDetailsDialog } from '../components/GatePassDetailsDialog'
+import { GatePassStatusBadge } from '../components/GatePassStatusBadge'
+import { useGatePassList } from '../hooks'
+import { emptyFilters, gatePassPurposes, gatePassStatuses } from '../types'
+
+const PAGE_SIZES = [10, 25, 50]
+
+const columns = [
+  '#',
+  'Place',
+  'Date & Time',
+  'Purpose',
+  'Contact Person',
+  'Status',
+  'Created On',
+  'Actions',
+]
+
+export default function GatePassListPage() {
+  usePageMeta('Gate Pass', 'Create, track and manage your gate pass requests.')
+  const ability = useAbility()
+  const navigate = useNavigate()
+  const location = useLocation()
+  const [notice, setNotice] = useState(location.state?.notice ?? null)
+  const [draft, setDraft] = useState(emptyFilters)
+  const [applied, setApplied] = useState(emptyFilters)
+  const [filterError, setFilterError] = useState('')
+  const [search, setSearch] = useState('')
+  const [pageSize, setPageSize] = useState(10)
+  const [page, setPage] = useState(1)
+  const [viewing, setViewing] = useState(null)
+  const debouncedSearch = useDebouncedValue(search)
+  const { data, isPending, isError, error, refetch, isPlaceholderData } = useGatePassList({
+    ...applied,
+    search: debouncedSearch,
+    page,
+    pageSize,
+  })
+  const items = data?.items ?? []
+  const total = data?.total ?? 0
+  const pageCount = Math.max(1, Math.ceil(total / pageSize))
+  const currentPage = Math.min(page, pageCount)
+  const firstShown = total === 0 ? 0 : (currentPage - 1) * pageSize + 1
+  const lastShown = Math.min(currentPage * pageSize, total)
+  function applyFilters(event) {
+    event.preventDefault()
+    if (draft.from && draft.to && draft.from > draft.to) {
+      setFilterError('"From Date" must be on or before "To Date".')
+      return
+    }
+    setFilterError('')
+    setApplied(draft)
+    setPage(1)
+  }
+  function resetFilters() {
+    setDraft(emptyFilters)
+    setApplied(emptyFilters)
+    setFilterError('')
+    setSearch('')
+    setPage(1)
+  }
+  return (
+    <div className="mx-auto max-w-[100rem]">
+      <PageBreadcrumbs items={[{ label: 'Gate Pass' }]} />
+      <PageHero
+        icon={<IdCard />}
+        title="Gate Pass"
+        description="Create, track and manage gate pass requests."
+        action={
+          ability.can('create', 'gate-pass') ? (
+            <Button asChild className="max-sm:w-full">
+              <Link to="/gate-pass/create">
+                <Plus aria-hidden="true" /> Create Gate Pass Request
+              </Link>
+            </Button>
+          ) : undefined
+        }
+      />
+
+      {notice && (
+        <div
+          role="status"
+          className="mb-5 flex items-center justify-between gap-3 rounded-xl bg-success-soft px-4 py-3 text-success"
+        >
+          <p className="font-semibold">{notice}</p>
+          <button
+            type="button"
+            aria-label="Dismiss message"
+            onClick={() => setNotice(null)}
+            className="rounded p-1 hover:bg-card/50"
+          >
+            <X className="size-4" aria-hidden="true" />
+          </button>
+        </div>
+      )}
+
+      <Card className="mb-5 p-5">
+        <form
+          onSubmit={applyFilters}
+          className="grid items-end gap-4 sm:grid-cols-2 lg:grid-cols-[repeat(4,minmax(0,1fr))_auto_auto]"
+          aria-label="Filter gate pass requests"
+        >
+          <div className="grid gap-1.5 text-sm">
+            <label htmlFor="filter-from">From Date</label>
+            <Input
+              id="filter-from"
+              type="date"
+              value={draft.from}
+              onChange={(e) => setDraft({ ...draft, from: e.target.value })}
+              className="h-12"
+            />
+          </div>
+          <div className="grid gap-1.5 text-sm">
+            <label htmlFor="filter-to">To Date</label>
+            <Input
+              id="filter-to"
+              type="date"
+              value={draft.to}
+              onChange={(e) => setDraft({ ...draft, to: e.target.value })}
+              className="h-12"
+            />
+          </div>
+          <div className="grid gap-1.5 text-sm">
+            <label htmlFor="filter-purpose">Purpose</label>
+            <NativeSelect
+              id="filter-purpose"
+              value={draft.purpose}
+              onChange={(e) => setDraft({ ...draft, purpose: e.target.value })}
+              className="h-12"
+            >
+              <option value="">All Purpose</option>
+              {gatePassPurposes.map((purpose) => (
+                <option key={purpose} value={purpose}>
+                  {purpose}
+                </option>
+              ))}
+            </NativeSelect>
+          </div>
+          <div className="grid gap-1.5 text-sm">
+            <label htmlFor="filter-status">Status</label>
+            <NativeSelect
+              id="filter-status"
+              value={draft.status}
+              onChange={(e) => setDraft({ ...draft, status: e.target.value })}
+              className="h-12"
+            >
+              <option value="">All Status</option>
+              {gatePassStatuses.map((status) => (
+                <option key={status} value={status}>
+                  {status}
+                </option>
+              ))}
+            </NativeSelect>
+          </div>
+          <Button type="button" variant="outline" className="h-12" onClick={resetFilters}>
+            <RotateCcw aria-hidden="true" /> Reset
+          </Button>
+          <Button type="submit" className="h-12">
+            <ListFilter aria-hidden="true" /> Apply
+          </Button>
+          {filterError && (
+            <p role="alert" className="text-sm text-destructive sm:col-span-full">
+              {filterError}
+            </p>
+          )}
+        </form>
+      </Card>
+
+      <Card className="p-5">
+        <div className="mb-5 flex flex-col gap-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+          <label className="flex items-center gap-2.5">
+            Show
+            <NativeSelect
+              value={pageSize}
+              onChange={(e) => {
+                setPageSize(Number(e.target.value))
+                setPage(1)
+              }}
+              className="h-10 w-20"
+            >
+              {PAGE_SIZES.map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </NativeSelect>
+            entries
+          </label>
+          <div className="w-full sm:w-[min(27.5rem,52%)]">
+            <Input
+              type="search"
+              icon={<Search />}
+              aria-label="Search gate pass requests"
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value)
+                setPage(1)
+              }}
+              placeholder="Search by place, purpose or contact person..."
+              className="h-12"
+            />
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table
+            className="w-full border-separate border-spacing-0 text-sm"
+            aria-busy={isPlaceholderData}
+          >
+            <caption className="sr-only">Your gate pass requests</caption>
+            <thead>
+              <tr>
+                {columns.map((title, index) => (
+                  <th
+                    key={title}
+                    scope="col"
+                    className={`h-14 bg-primary-soft px-4 text-left font-bold whitespace-nowrap ${index === 0 ? 'rounded-tl-lg' : ''} ${index === columns.length - 1 ? 'rounded-tr-lg' : ''}`}
+                  >
+                    {title}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className={isPlaceholderData ? 'opacity-60' : undefined}>
+              {isPending &&
+                [0, 1, 2].map((row) => (
+                  <tr key={row}>
+                    <td colSpan={columns.length} className="border-b border-border p-3">
+                      <Skeleton className="h-12" />
+                    </td>
+                  </tr>
+                ))}
+              {items.map((request, index) => (
+                <tr key={request.id}>
+                  {[
+                    (currentPage - 1) * pageSize + index + 1,
+                    request.place,
+                    formatDateTime(request.dateTime),
+                    request.purpose,
+                    request.contactPerson,
+                  ].map((cell, cellIndex) => (
+                    <td
+                      key={cellIndex}
+                      className="h-[4.5rem] border-b border-border px-4 whitespace-nowrap"
+                    >
+                      {cell}
+                    </td>
+                  ))}
+                  <td className="h-[4.5rem] border-b border-border px-4 whitespace-nowrap">
+                    <GatePassStatusBadge status={request.status} />
+                  </td>
+                  <td className="h-[4.5rem] border-b border-border px-4 whitespace-nowrap">
+                    {formatDateTime(request.createdOn)}
+                  </td>
+                  <td className="h-[4.5rem] border-b border-border px-4 whitespace-nowrap">
+                    <div className="flex gap-2">
+                      {ability.can('update', 'gate-pass') && (
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          aria-label={`Edit request ${request.id}`}
+                          title="Edit request"
+                          onClick={() =>
+                            navigate(`/gate-pass/${encodeURIComponent(request.id)}/edit`)
+                          }
+                        >
+                          <Pencil aria-hidden="true" />
+                        </Button>
+                      )}
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        aria-label={`View request ${request.id}`}
+                        title="View request"
+                        onClick={() => setViewing(request)}
+                      >
+                        <Eye aria-hidden="true" />
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {isError && (
+            <div role="alert" className="py-8 text-center text-sm">
+              <p className="text-destructive">{getErrorMessage(error)}</p>
+              <Button variant="link" onClick={() => void refetch()}>
+                Try again
+              </Button>
+            </div>
+          )}
+          {!isPending && !isError && items.length === 0 && (
+            <EmptyState>No gate pass requests found.</EmptyState>
+          )}
+        </div>
+
+        <div className="mt-5 flex flex-col gap-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+          <span>
+            Showing {firstShown} to {lastShown} of {total} entries
+          </span>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={currentPage <= 1}
+              onClick={() => setPage(currentPage - 1)}
+            >
+              &lsaquo; Previous
+            </Button>
+            <span
+              aria-current="page"
+              className="grid h-9 min-w-9 place-items-center rounded-lg bg-primary px-3 font-semibold text-primary-foreground"
+            >
+              {currentPage}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={currentPage >= pageCount}
+              onClick={() => setPage(currentPage + 1)}
+            >
+              Next &rsaquo;
+            </Button>
+          </div>
+        </div>
+      </Card>
+
+      <GatePassDetailsDialog request={viewing} onClose={() => setViewing(null)} />
+    </div>
+  )
+}
+
+===== ./src/features/modules/pages/ModulePage.jsx =====
+import { useLocation } from 'react-router-dom'
+import { PageBreadcrumbs } from '@/components/layout/PageBreadcrumbs'
+import { PageHero } from '@/components/layout/PageHero'
+import { findModuleByPath } from '@/config/modules'
+import { usePageMeta } from '@/hooks/usePageMeta'
+import NotFoundPage from '@/features/errors/pages/NotFoundPage'
+
+/** Landing page for portal areas that have not been migrated yet. */
+export default function ModulePage() {
+  const { pathname } = useLocation()
+  const module = findModuleByPath(pathname)
+  usePageMeta(module?.name, module?.summary)
+  if (!module) return <NotFoundPage />
+  return (
+    <div className="mx-auto max-w-[100rem]">
+      <PageBreadcrumbs items={[{ label: module.name }]} />
+      <PageHero icon={<module.icon />} title={module.name} description={module.summary} />
+      <div className="rounded-2xl border border-border bg-card p-8 text-center shadow-sm">
+        <p className="font-semibold">This section is being moved to the new portal.</p>
+        <p className="mt-2 text-muted-foreground">
+          {module.name} tools will appear here soon. Until then, continue to use the existing portal
+          for this area.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+===== ./src/features/notifications/api/notificationsApi.js =====
+import { endpoints } from '@/config/endpoints'
+import { http } from '@/lib/http'
+
+export const notificationsApi = {
+  async list() {
+    if (__USE_MOCK__) {
+      const { mockNotifications } = await import('./notificationsMock')
+      return mockNotifications()
+    }
+    const { data } = await http.get(endpoints.dashboard.notifications)
+    return data
+  },
+}
+
+===== ./src/features/notifications/api/notificationsMock.js =====
+const hoursAgo = (hours) => new Date(Date.now() - hours * 3_600_000).toISOString()
+
+export async function mockNotifications() {
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  return [
+    {
+      id: 'n-1',
+      category: 'event',
+      title: 'IB Group Annual Townhall',
+      message: 'Join us on 28 Nov 2026 at 4:00 PM.',
+      createdAt: hoursAgo(2),
+      important: true,
+      unread: true,
+    },
+    {
+      id: 'n-2',
+      category: 'hr',
+      title: 'HR: Profile Update Reminder',
+      message: 'Please complete your profile details by 24 Nov 2026.',
+      createdAt: hoursAgo(5),
+      important: true,
+      unread: true,
+    },
+    {
+      id: 'n-3',
+      category: 'holiday',
+      title: 'Holiday Announcement',
+      message: 'Office will remain closed on 25 Nov 2026 (Guru Nanak Jayanti).',
+      createdAt: hoursAgo(26),
+      important: false,
+      unread: true,
+    },
+    {
+      id: 'n-4',
+      category: 'policy',
+      title: 'Policy Update',
+      message: 'Revised Travel & Expense policy is now live. Kindly review the updated document.',
+      createdAt: hoursAgo(50),
+      important: true,
+      unread: false,
+    },
+  ]
+}
+
+===== ./src/features/notifications/components/NotificationBell.jsx =====
+import { Bell } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { formatRelativeTime } from '@/lib/relative-time'
+import { useNotifications } from '../hooks'
+import { notificationIcons } from './notificationIcon'
+
+/** Bell in the top bar: shows the unread count and the latest notifications. */
+export function NotificationBell() {
+  const { data: notifications = [] } = useNotifications()
+  const unread = notifications.filter((item) => item.unread).length
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        aria-label={unread ? `Notifications, ${unread} unread` : 'Notifications'}
+        className="relative rounded-lg p-2 text-primary hover:bg-secondary"
+      >
+        <Bell className="size-6" aria-hidden="true" />
+        {unread > 0 && (
+          <span
+            aria-hidden="true"
+            className="absolute -top-0.5 -right-0.5 grid min-w-5 place-items-center rounded-full border-2 border-card bg-primary px-1 text-xs leading-4 font-bold text-primary-foreground"
+          >
+            {unread}
+          </span>
+        )}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent className="w-80 max-w-[calc(100vw-2rem)]">
+        <DropdownMenuLabel className="font-bold">Notifications</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        {notifications.length === 0 && (
+          <p className="px-3 py-4 text-center text-sm text-muted-foreground">
+            You&rsquo;re all caught up.
+          </p>
+        )}
+        {notifications.slice(0, 4).map((item) => {
+          const Icon = notificationIcons[item.category]
+          return (
+            <DropdownMenuItem key={item.id} asChild>
+              <Link to="/" className="items-start gap-3">
+                <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-full bg-primary-soft text-primary">
+                  <Icon aria-hidden="true" />
+                </span>
+                <span className="min-w-0">
+                  <span className="block truncate font-semibold">{item.title}</span>
+                  <span className="block text-xs text-muted-foreground">
+                    {formatRelativeTime(item.createdAt)}
+                  </span>
+                </span>
+              </Link>
+            </DropdownMenuItem>
+          )
+        })}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem asChild>
+          <Link to="/" className="justify-center font-semibold text-primary">
+            View all
+          </Link>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+===== ./src/features/notifications/components/NotificationsPanel.jsx =====
+import { Bell } from 'lucide-react'
+import { useState } from 'react'
+import { Card } from '@/components/ui/card'
+import { Skeleton } from '@/components/ui/skeleton'
+import { EmptyState } from '@/components/common/EmptyState'
+import { cn } from '@/lib/utils'
+import { formatRelativeTime } from '@/lib/relative-time'
+import { getErrorMessage } from '@/lib/api-error'
+import { useNotifications } from '../hooks'
+import { notificationIcons } from './notificationIcon'
+
+const filters = ['All', 'Important', 'Unread']
+
+function matches(filter, item) {
+  if (filter === 'Important') return item.important
+  if (filter === 'Unread') return item.unread
+  return true
+}
+
+export function NotificationsPanel() {
+  const [filter, setFilter] = useState('All')
+  const { data: notifications = [], isPending, isError, error, refetch } = useNotifications()
+  const visible = notifications.filter((item) => matches(filter, item))
+  return (
+    <Card role="region" className="p-5 pb-3" aria-labelledby="notifications-heading">
+      <div className="mb-4 flex items-center justify-between gap-2">
+        <h2
+          id="notifications-heading"
+          className="flex items-center gap-2.5 text-xl font-bold tracking-tight"
+        >
+          <Bell className="size-6 text-primary" aria-hidden="true" /> Notifications
+        </h2>
+      </div>
+
+      <div
+        role="group"
+        aria-label="Filter notifications"
+        className="grid grid-cols-3 gap-2 border-b border-border pb-4"
+      >
+        {filters.map((name) => {
+          const count = notifications.filter((item) => matches(name, item)).length
+          const selected = filter === name
+          return (
+            <button
+              key={name}
+              type="button"
+              aria-pressed={selected}
+              onClick={() => setFilter(name)}
+              className={cn(
+                'min-h-10 rounded-xl border px-2 text-sm whitespace-nowrap transition-colors',
+                selected
+                  ? 'border-primary bg-primary font-bold text-primary-foreground shadow-sm'
+                  : 'border-input bg-card hover:bg-secondary',
+              )}
+            >
+              {name} ({count})
+            </button>
+          )
+        })}
+      </div>
+
+      <div>
+        {isPending && (
+          <div className="space-y-3 py-4">
+            {[0, 1, 2].map((i) => (
+              <Skeleton key={i} className="h-16" />
+            ))}
+          </div>
+        )}
+        {isError && (
+          <div role="alert" className="py-6 text-center text-sm">
+            <p className="text-destructive">{getErrorMessage(error)}</p>
+            <button
+              type="button"
+              className="mt-2 font-semibold text-primary underline"
+              onClick={() => void refetch()}
+            >
+              Try again
+            </button>
+          </div>
+        )}
+        {!isPending && !isError && visible.length === 0 && (
+          <EmptyState>You&rsquo;re all caught up.</EmptyState>
+        )}
+        <ul>
+          {visible.map((item) => {
+            const Icon = notificationIcons[item.category]
+            return (
+              <li
+                key={item.id}
+                className="grid grid-cols-[2.75rem_minmax(0,1fr)] items-center gap-x-3 border-b border-border py-3.5 last:border-b-0 sm:grid-cols-[3.25rem_minmax(0,1fr)_auto]"
+              >
+                <span className="grid size-11 place-items-center rounded-full bg-primary-soft text-primary sm:size-[3.25rem]">
+                  <Icon className="size-5 sm:size-6" aria-hidden="true" />
+                </span>
+                <div className="min-w-0">
+                  <h3 className="font-semibold">{item.title}</h3>
+                  <p className="mt-0.5 text-sm text-foreground/80">{item.message}</p>
+                </div>
+                <small className="col-start-2 mt-1 text-muted-foreground sm:col-start-3 sm:mt-0">
+                  {formatRelativeTime(item.createdAt)}
+                </small>
+              </li>
+            )
+          })}
+        </ul>
+      </div>
+    </Card>
+  )
+}
+
+===== ./src/features/notifications/components/notificationIcon.js =====
+import { Bell, CalendarDays, FileText, Users } from 'lucide-react'
+
+export const notificationIcons = {
+  event: CalendarDays,
+  holiday: CalendarDays,
+  hr: Users,
+  policy: FileText,
+  general: Bell,
+}
+
