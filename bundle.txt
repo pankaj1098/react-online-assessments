@@ -1,0 +1,4394 @@
+IB Group Employee Portal - change bundle (changes since the Meeting Room Bookings bundle)
+Apply: node apply-bundle.mjs bundle.txt --dry-run, then without --dry-run
+
+@@@ DELETE src/features/meeting-room-bookings/components/MeetingRoomNav.jsx
+@@@ DELETE src/features/meeting-room-bookings/components/RoomSchedule.jsx
+@@@ FILE src/app/App.test.jsx
+import { render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { createMemoryRouter, RouterProvider } from 'react-router-dom'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { useAuthStore } from '@/features/auth/store/authStore'
+import { addDays, todayLocal } from '@/features/meeting-room-bookings/format'
+import { queryClient } from '@/lib/query-client'
+import { AppProviders } from './providers/AppProviders'
+import { routes } from './router/routes'
+
+function renderApp(path) {
+  const router = createMemoryRouter(routes, { initialEntries: [path] })
+  return render(
+    <AppProviders>
+      <RouterProvider router={router} />
+    </AppProviders>,
+  )
+}
+
+function signIn(roles = ['employee']) {
+  useAuthStore.getState().setSession({
+    accessToken: 't',
+    user: { employeeId: '10039601', name: 'Test User', roles },
+  })
+}
+beforeEach(() => {
+  useAuthStore.getState().clear()
+  queryClient.clear()
+})
+describe('routing and auth', () => {
+  it('sends signed-out visitors to the login page with a single h1 and its own title', async () => {
+    renderApp('/gate-pass')
+    expect(
+      await screen.findByRole('heading', { level: 1, name: /employee portal/i }),
+    ).toBeInTheDocument()
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
+    expect(document.title).toBe('Sign in | IB Group Employee Portal')
+  })
+  it('returns the user to the page they originally asked for after login', async () => {
+    const user = userEvent.setup()
+    renderApp('/gate-pass')
+    await user.type(await screen.findByLabelText(/employee id/i), '10039601')
+    await user.type(screen.getByLabelText(/^password/i), 'secret')
+    await user.click(screen.getByRole('button', { name: 'Login' }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Gate Pass' })).toBeInTheDocument()
+  })
+  it('validates the login form before calling the API', async () => {
+    const user = userEvent.setup()
+    renderApp('/login')
+    await user.click(await screen.findByRole('button', { name: 'Login' }))
+    expect(await screen.findByText('Enter your employee ID or username.')).toBeInTheDocument()
+    expect(screen.getByText('Enter your password.')).toBeInTheDocument()
+  })
+  it('signs in and lands on the dashboard', async () => {
+    const user = userEvent.setup()
+    renderApp('/login')
+    await user.type(await screen.findByLabelText(/employee id/i), '10039601')
+    await user.type(screen.getByLabelText(/^password/i), 'secret')
+    await user.click(screen.getByRole('button', { name: 'Login' }))
+    expect(
+      await screen.findByRole('heading', { level: 1, name: /welcome back, 10039601/i }),
+    ).toBeInTheDocument()
+    expect(document.title).toBe('Home | IB Group Employee Portal')
+  })
+  it('shows a custom 404 page for unknown addresses', async () => {
+    signIn()
+    renderApp('/does-not-exist')
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Page not found' }),
+    ).toBeInTheDocument()
+    expect(document.title).toBe('Page not found | IB Group Employee Portal')
+  })
+  it('shows Admin to employees with its sub modules', async () => {
+    signIn(['employee'])
+    renderApp('/admin')
+    expect(await screen.findByRole('heading', { level: 1, name: 'Admin' })).toBeInTheDocument()
+    const main = within(screen.getByRole('main'))
+    expect(main.getByRole('link', { name: /travel request/i })).toBeInTheDocument()
+    expect(main.getByRole('link', { name: /gate pass/i })).toBeInTheDocument()
+  })
+})
+describe('gate pass', () => {
+  it('lists requests, validates the form, then creates a new request', async () => {
+    signIn()
+    const user = userEvent.setup()
+    renderApp('/gate-pass')
+    expect(await screen.findByRole('heading', { level: 1, name: 'Gate Pass' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'View request GP-1001' })).toBeInTheDocument()
+    await user.click(screen.getByRole('link', { name: /create gate pass request/i }))
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Create Gate Pass Request' }),
+    ).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /submit request/i }))
+    expect(await screen.findByText('Enter the place.')).toBeInTheDocument()
+    expect(screen.getByText('Select the purpose of visit.')).toBeInTheDocument()
+    await user.type(screen.getByLabelText(/^place/i), 'Warehouse')
+    await user.type(screen.getByLabelText(/date & time/i), '2026-12-01T10:30')
+    await user.type(screen.getByLabelText(/contact person/i), 'R. Sharma')
+    await user.selectOptions(screen.getByLabelText(/^purpose/i), 'Official')
+    await user.type(screen.getByLabelText(/^reason/i), 'Stock audit')
+    await user.click(screen.getByRole('button', { name: /submit request/i }))
+    expect(await screen.findByRole('status')).toHaveTextContent('submitted for approval')
+    await waitFor(() => expect(screen.getByText('Warehouse')).toBeInTheDocument())
+    expect(within(screen.getByRole('table')).getByText('Pending')).toBeInTheDocument()
+  })
+})
+describe('meeting room bookings', () => {
+  it('validates the form, then submits a request for approval', async () => {
+    signIn()
+    const user = userEvent.setup()
+    renderApp('/admin/meeting-room-bookings/create')
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Book a Meeting Room' }),
+    ).toBeInTheDocument()
+
+    // Everything is on one page; the room's bookings are listed on the right.
+    await user.click(screen.getByRole('button', { name: /submit request/i }))
+    expect(await screen.findByText('Select a room.')).toBeInTheDocument()
+    expect(screen.getByLabelText(/show bookings for/i)).toBeInTheDocument()
+    await user.click(await screen.findByRole('radio', { name: /saffron/i }))
+    await user.clear(screen.getByLabelText(/^start date/i))
+    await user.type(screen.getByLabelText(/^start date/i), addDays(todayLocal(), 7))
+    await user.type(screen.getByLabelText(/^start time/i), '10:00')
+    await user.type(screen.getByLabelText(/^end time/i), '11:00')
+    await user.click(screen.getByRole('button', { name: /submit request/i }))
+    expect(await screen.findByText('Enter the meeting title.')).toBeInTheDocument()
+    await user.type(screen.getByLabelText(/^meeting title/i), 'Weekly sync')
+    await user.type(screen.getByLabelText(/^number of persons/i), '5')
+    await user.click(screen.getByRole('button', { name: /submit request/i }))
+
+    expect(await screen.findByText(/submitted for approval/i)).toBeInTheDocument()
+    expect(await screen.findByText('Weekly sync')).toBeInTheDocument()
+  })
+})
+@@@ END
+@@@ FILE src/app/router/routes.jsx
+import { Navigate } from 'react-router-dom'
+import { AppShell } from '@/components/layout/AppShell'
+import { PageLoader } from '@/components/common/PageLoader'
+import { flattenModules } from '@/config/modules'
+import RouteErrorPage from '@/features/errors/pages/RouteErrorPage'
+import { GuestRoute, ProtectedRoute, RequireAbility } from './guards'
+
+/** Pages are lazy-loaded so each one becomes its own small JavaScript chunk. */
+const page = (load) => ({
+  lazy: async () => ({ Component: (await load()).default }),
+})
+
+/** Modules that have their own routes below; everything else gets the generic module page. */
+const customRoutes = ['home', 'gate-pass', 'meeting-room-bookings']
+
+const moduleRoutes = flattenModules()
+  .filter((module) => !customRoutes.includes(module.id))
+  .map((module) => ({
+    path: module.path,
+    element: <RequireAbility subject={module.id} />,
+    children: [{ index: true, ...page(() => import('@/features/modules/pages/ModulePage')) }],
+  }))
+
+/** Route table. Kept separate from the router instance so tests can use an in-memory router. */
+export const routes = [
+  {
+    errorElement: <RouteErrorPage />,
+    hydrateFallbackElement: <PageLoader />,
+    children: [
+      {
+        element: <GuestRoute />,
+        children: [{ path: '/login', ...page(() => import('@/features/auth/pages/LoginPage')) }],
+      },
+      {
+        element: <ProtectedRoute />,
+        children: [
+          {
+            element: <AppShell />,
+            children: [
+              { index: true, ...page(() => import('@/features/dashboard/pages/DashboardPage')) },
+              {
+                path: 'gate-pass',
+                element: <RequireAbility subject="gate-pass" />,
+                children: [
+                  {
+                    index: true,
+                    ...page(() => import('@/features/gate-pass/pages/GatePassListPage')),
+                  },
+                  {
+                    path: 'create',
+                    ...page(() => import('@/features/gate-pass/pages/GatePassFormPage')),
+                  },
+                  {
+                    path: ':id/edit',
+                    ...page(() => import('@/features/gate-pass/pages/GatePassFormPage')),
+                  },
+                ],
+              },
+              {
+                path: 'admin/meeting-room-bookings',
+                element: <RequireAbility subject="meeting-room-bookings" />,
+                children: [
+                  {
+                    index: true,
+                    ...page(
+                      () =>
+                        import('@/features/meeting-room-bookings/pages/MeetingRoomDashboardPage'),
+                    ),
+                  },
+                  {
+                    path: 'create',
+                    ...page(() => import('@/features/meeting-room-bookings/pages/BookingFormPage')),
+                  },
+                  {
+                    path: 'calendar',
+                    ...page(() => import('@/features/meeting-room-bookings/pages/CalendarPage')),
+                  },
+                  {
+                    path: 'my-bookings',
+                    ...page(() => import('@/features/meeting-room-bookings/pages/MyBookingsPage')),
+                  },
+                  {
+                    path: ':id',
+                    ...page(
+                      () => import('@/features/meeting-room-bookings/pages/BookingDetailsPage'),
+                    ),
+                  },
+                  {
+                    path: ':id/edit',
+                    ...page(() => import('@/features/meeting-room-bookings/pages/BookingFormPage')),
+                  },
+                ],
+              },
+              ...moduleRoutes,
+              { path: '*', ...page(() => import('@/features/errors/pages/NotFoundPage')) },
+            ],
+          },
+        ],
+      },
+      { path: '/index.html', element: <Navigate to="/" replace /> },
+    ],
+  },
+]
+@@@ END
+@@@ FILE src/components/layout/SidebarContent.jsx
+import { useAbility } from '@casl/react'
+import { ChevronDown, Search, X } from 'lucide-react'
+import { useState } from 'react'
+import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
+import { Logo } from '@/components/common/Logo'
+import { findModuleTrail, modules } from '@/config/modules'
+import { cn } from '@/lib/utils'
+import { useUiStore } from '@/stores/uiStore'
+
+/** One sidebar row. If the module has sub modules it gets an expand button and nests them. */
+function SidebarItem({ module, collapsed = false, depth = 0, onNavigate }) {
+  const ability = useAbility()
+  const { pathname } = useLocation()
+  // null = follow the URL (open while you are inside this branch); true/false = user's choice.
+  const [toggled, setToggled] = useState(null)
+  const children = (module.children ?? []).filter((child) => ability.can('view', child.id))
+  const hasChildren = children.length > 0 && !collapsed
+  const inBranch = findModuleTrail(pathname).some((item) => item.id === module.id)
+  const expanded = hasChildren && (toggled ?? inBranch)
+  const Icon = module.icon
+  return (
+    <li>
+      <div className="relative">
+        <NavLink
+          to={module.path}
+          // Parents match their own page only, so the highlight moves to the sub module.
+          end={module.path === '/' || children.length > 0}
+          onClick={onNavigate}
+          title={module.name}
+          className={({ isActive }) =>
+            cn(
+              'flex items-center rounded-xl transition-colors',
+              depth === 0 ? 'min-h-12 gap-4 text-base' : 'min-h-10 gap-3 text-sm',
+              collapsed ? 'justify-center' : depth === 0 ? 'px-4' : 'px-3',
+              hasChildren && 'pr-12',
+              isActive
+                ? 'bg-sidebar-active font-bold text-sidebar-active-foreground shadow-sm'
+                : cn('text-sidebar-foreground hover:bg-sidebar-hover', inBranch && 'font-bold'),
+            )
+          }
+        >
+          {Icon && <Icon className="size-5.5 shrink-0" aria-hidden="true" />}
+          <span className={cn(collapsed && 'sr-only')}>{module.name}</span>
+        </NavLink>
+        {hasChildren && (
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-label={`${expanded ? 'Collapse' : 'Expand'} ${module.name}`}
+            onClick={() => setToggled(!expanded)}
+            className="absolute top-1/2 right-2 -translate-y-1/2 rounded-lg p-2 hover:bg-sidebar-hover"
+          >
+            <ChevronDown
+              className={cn('size-4 transition-transform', expanded && 'rotate-180')}
+              aria-hidden="true"
+            />
+          </button>
+        )}
+      </div>
+      {expanded && (
+        <ul className="mt-1 mb-1 ml-9 grid gap-1 border-l border-sidebar-border pl-2">
+          {children.map((child) => (
+            <SidebarItem key={child.id} module={child} depth={depth + 1} onNavigate={onNavigate} />
+          ))}
+        </ul>
+      )}
+    </li>
+  )
+}
+
+export function SidebarContent({ collapsed = false, onNavigate }) {
+  const ability = useAbility()
+  const navigate = useNavigate()
+  const { pathname } = useLocation()
+  const search = useUiStore((state) => state.applicationSearch)
+  const setSearch = useUiStore((state) => state.setApplicationSearch)
+  function handleSearch(value) {
+    setSearch(value)
+    // Applications live on the home page, so show them as soon as the user searches.
+    if (value && pathname !== '/') navigate('/')
+  }
+  return (
+    <div className="flex h-full flex-col">
+      <Link
+        to="/"
+        onClick={onNavigate}
+        className={cn(
+          'flex h-topbar shrink-0 items-center gap-3 border-b border-sidebar-border text-xl font-bold whitespace-nowrap',
+          collapsed ? 'justify-center px-3' : 'px-6',
+        )}
+      >
+        <Logo alt="" className="size-10 shrink-0" />
+        <span className={cn(collapsed && 'sr-only')}>IB GROUP</span>
+        {collapsed && <span className="sr-only">Home</span>}
+      </Link>
+
+      {!collapsed && (
+        <search className="mx-3 mt-6 mb-3">
+          <label className="flex h-10 items-center gap-2 rounded-lg border border-white/30 bg-white/10 px-2.5 focus-within:border-white/70">
+            <Search className="size-4 shrink-0" aria-hidden="true" />
+            <span className="sr-only">Search applications</span>
+            <input
+              type="search"
+              value={search}
+              onChange={(event) => handleSearch(event.target.value)}
+              placeholder="Search applications..."
+              autoComplete="off"
+              className="min-w-0 flex-1 bg-transparent text-sm text-white outline-none placeholder:text-white/75 [&::-webkit-search-cancel-button]:hidden"
+            />
+            {search && (
+              <button
+                type="button"
+                aria-label="Clear search"
+                onClick={() => setSearch('')}
+                className="rounded p-0.5 hover:bg-white/15"
+              >
+                <X className="size-3.5" aria-hidden="true" />
+              </button>
+            )}
+          </label>
+        </search>
+      )}
+
+      <nav
+        aria-label="Main navigation"
+        className={cn('flex-1 overflow-y-auto px-2.5 pb-6', collapsed && 'pt-6')}
+      >
+        <ul className="grid gap-1.5">
+          {modules
+            .filter((module) => ability.can('view', module.id))
+            .map((module) => (
+              <SidebarItem
+                key={module.id}
+                module={module}
+                collapsed={collapsed}
+                onNavigate={onNavigate}
+              />
+            ))}
+        </ul>
+      </nav>
+    </div>
+  )
+}
+@@@ END
+@@@ FILE src/config/endpoints.js
+/**
+ * .NET Web API routes, relative to VITE_API_BASE_URL.
+ * Adjust these to match the real controllers - this is the only file that knows the URLs.
+ */
+export const endpoints = {
+  auth: {
+    login: '/auth/login',
+    refresh: '/auth/refresh',
+    logout: '/auth/logout',
+  },
+  dashboard: {
+    announcements: '/announcements',
+    notifications: '/notifications',
+  },
+  gatePass: {
+    collection: '/gate-passes',
+    item: (id) => `/gate-passes/${encodeURIComponent(id)}`,
+  },
+  meetingRooms: {
+    rooms: '/meeting-rooms', // enabled rooms only (old: AutoComplete?source=GetMeetingRooms)
+    bookings: '/meeting-room-bookings', // GET = my bookings, POST = create
+    item: (id) => `/meeting-room-bookings/${encodeURIComponent(id)}`, // details, edit
+    cancel: (id) => `/meeting-room-bookings/${encodeURIComponent(id)}/cancel`,
+    comments: (id) => `/meeting-room-bookings/${encodeURIComponent(id)}/comments`, // UpdateDetails
+    calendar: '/meeting-room-bookings/calendar', // approved bookings as events
+    availability: '/meeting-room-bookings/availability', // CheckMeetingRoomAvailability, 409 on clash
+    insights: '/meeting-room-bookings/insights',
+  },
+}
+@@@ END
+@@@ FILE src/config/modules.js
+import {
+  FileText,
+  House,
+  Megaphone,
+  Monitor,
+  Receipt,
+  Settings,
+  UserRound,
+  Users,
+} from 'lucide-react'
+
+/**
+ * Every area of the portal. Drives the sidebar, routes and permission checks.
+ * A module can have `children` (sub modules), and those can have their own `children`.
+ */
+export const modules = [
+  {
+    id: 'home',
+    name: 'Home',
+    path: '/',
+    icon: House,
+    summary: 'Your applications and notifications.',
+  },
+  {
+    id: 'hr',
+    name: 'HR',
+    path: '/hr',
+    icon: Users,
+    summary: 'Human resources services and requests.',
+  },
+  {
+    id: 'it',
+    name: 'IT',
+    path: '/it',
+    icon: Monitor,
+    summary: 'IT support, assets and access requests.',
+  },
+  {
+    id: 'taxes',
+    name: 'Taxes',
+    path: '/taxes',
+    icon: Receipt,
+    summary: 'Tax declarations and statements.',
+  },
+  {
+    id: 'ibigian-self-service',
+    name: 'Ibigian Self Service',
+    path: '/self-service',
+    icon: UserRound,
+    summary: 'View and manage your own employee details.',
+  },
+  {
+    id: 'admin',
+    name: 'Admin',
+    path: '/admin',
+    icon: Settings,
+    summary: 'Office administration services.',
+    children: [
+      {
+        id: 'travel-request',
+        name: 'Travel Request',
+        path: '/admin/travel-request',
+        summary: 'Raise and track travel requests.',
+      },
+      {
+        id: 'visitor-request',
+        name: 'Visitor Request',
+        path: '/admin/visitor-request',
+        summary: 'Register visitors and track their requests.',
+      },
+      {
+        id: 'facility-request',
+        name: 'Facility Request',
+        path: '/admin/facility-request',
+        summary: 'Request office facilities and services.',
+        children: [
+          {
+            id: 'facility-requests',
+            name: 'Facility Requests',
+            path: '/admin/facility-request/facility-requests',
+            summary: 'Raise and track general facility requests.',
+          },
+          {
+            id: 'hospitality-request',
+            name: 'Hospitality Request',
+            path: '/admin/facility-request/hospitality-request',
+            summary: 'Request hospitality arrangements.',
+          },
+          {
+            id: 'food-request',
+            name: 'Food Request',
+            path: '/admin/facility-request/food-request',
+            summary: 'Request food and refreshments.',
+          },
+          {
+            id: 'company-car-request',
+            name: 'Company Car Request',
+            path: '/admin/facility-request/company-car-request',
+            summary: 'Request a company car.',
+          },
+          {
+            id: 'facility-travel-request',
+            name: 'Travel Request',
+            path: '/admin/facility-request/travel-request',
+            summary: 'Raise travel requests under facilities.',
+          },
+        ],
+      },
+      {
+        id: 'gate-pass',
+        name: 'Gate Pass',
+        path: '/gate-pass',
+        summary: 'Create, track and manage gate pass requests.',
+      },
+      {
+        id: 'meeting-room-bookings',
+        name: 'Meeting Room Bookings',
+        path: '/admin/meeting-room-bookings',
+        summary: 'Book and manage meeting rooms.',
+      },
+      {
+        id: 'courier-service',
+        name: 'Courier Service',
+        path: '/admin/courier-service',
+        summary: 'Send and track courier shipments.',
+      },
+      {
+        id: 'house-keeping',
+        name: 'House Keeping',
+        path: '/admin/house-keeping',
+        summary: 'Raise house keeping requests.',
+      },
+      {
+        id: 'contact-directory',
+        name: 'Contact Directory',
+        path: '/admin/contact-directory',
+        summary: 'Find colleagues and their contact details.',
+      },
+    ],
+  },
+  {
+    id: 'corp-communication',
+    name: 'Corp Communication',
+    path: '/corp-communication',
+    icon: Megaphone,
+    summary: 'Company announcements and communication.',
+  },
+  {
+    id: 'corporate-policies',
+    name: 'Corporate Policies',
+    path: '/corporate-policies',
+    icon: FileText,
+    summary: 'Company policies and guidelines.',
+  },
+]
+
+/** All modules at every level, in order. */
+export function flattenModules(list = modules) {
+  return list.flatMap((module) => [module, ...flattenModules(module.children ?? [])])
+}
+
+/** Path from the top-level module down to the one matching the URL, e.g. [Admin, Gate Pass]. */
+export function findModuleTrail(pathname, list = modules, trail = []) {
+  let best = []
+  for (const module of list) {
+    if (module.path === '/') continue
+    const next = [...trail, module]
+    if (pathname === module.path || pathname.startsWith(`${module.path}/`)) best = next
+    const deeper = findModuleTrail(pathname, module.children ?? [], next)
+    if (deeper.length > best.length) best = deeper
+  }
+  return best
+}
+
+export function findModuleByPath(pathname) {
+  return findModuleTrail(pathname).at(-1)
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/api/meetingRoom.schemas.js
+import { z } from 'zod'
+import { daysBetween, todayLocal } from '../format'
+
+export const REQUEST_MAX_LENGTH = 500
+export const MAX_BOOKING_DAYS = 31
+
+/** `endDate` is optional: blank means a single day. */
+export const bookingFormSchema = z
+  .object({
+    title: z
+      .string()
+      .trim()
+      .min(1, 'Enter the meeting title.')
+      .max(150, 'Title is too long (max 150 characters).'),
+    persons: z
+      .string()
+      .trim()
+      .regex(/^[1-9]\d{0,2}$/, 'Enter the number of persons (1-999).'),
+    additionalRequest: z
+      .string()
+      .trim()
+      .max(REQUEST_MAX_LENGTH, `Request is too long (max ${REQUEST_MAX_LENGTH} characters).`),
+    startDate: z.string().min(1, 'Select the start date.'),
+    endDate: z.string(),
+    startTime: z.string().min(1, 'Select the start time.'),
+    endTime: z.string().min(1, 'Select the end time.'),
+    roomId: z.string().min(1, 'Select a room.'),
+  })
+  .superRefine((values, ctx) => {
+    const end = values.endDate || values.startDate
+    if (values.startDate && values.startDate < todayLocal()) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['startDate'],
+        message: 'The start date cannot be in the past.',
+      })
+    }
+    if (values.startDate && end < values.startDate) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['endDate'],
+        message: 'End date must be on or after the start date.',
+      })
+    } else if (values.startDate && daysBetween(values.startDate, end) > MAX_BOOKING_DAYS) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['endDate'],
+        message: `A request can cover at most ${MAX_BOOKING_DAYS} days.`,
+      })
+    }
+    if (values.startTime && values.endTime && values.endTime <= values.startTime) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['endTime'],
+        message: 'End time must be after the start time.',
+      })
+    }
+  })
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/api/meetingRoom.schemas.test.js
+import { describe, expect, it } from 'vitest'
+import { addDays, todayLocal } from '../format'
+import { bookingFormSchema } from './meetingRoom.schemas'
+
+const valid = {
+  title: 'Weekly sync',
+  persons: '5',
+  additionalRequest: '',
+  startDate: addDays(todayLocal(), 3),
+  endDate: '',
+  startTime: '10:00',
+  endTime: '11:00',
+  roomId: 'saffron',
+}
+
+describe('bookingFormSchema', () => {
+  it('accepts a single-day request with no end date', () => {
+    expect(bookingFormSchema.safeParse(valid).success).toBe(true)
+  })
+  it('rejects an end time that is not after the start time', () => {
+    const result = bookingFormSchema.safeParse({ ...valid, endTime: '10:00' })
+    expect(result.success).toBe(false)
+    expect(result.error?.issues[0]?.message).toBe('End time must be after the start time.')
+  })
+  it('rejects an end date before the start date', () => {
+    const result = bookingFormSchema.safeParse({ ...valid, endDate: addDays(todayLocal(), 1) })
+    expect(result.success).toBe(false)
+  })
+})
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/api/meetingRoomApi.js
+import { endpoints } from '@/config/endpoints'
+import { ApiError } from '@/lib/api-error'
+import { http } from '@/lib/http'
+import { toneOrder } from '../roomTone'
+import { getBookingStatus } from '../status'
+
+/**
+ * Meeting room calls. Paths, query names and response shapes are the contract assumed for the
+ * .NET API - adjust here if it differs. The server sends `isApproved` (null/true/false) and
+ * `isCancelled`; they are turned into a single `status` here.
+ */
+function normalizeRoom(room, index) {
+  return { ...room, tone: room.tone ?? toneOrder[index % toneOrder.length] }
+}
+
+function normalizeBooking(raw) {
+  const { isApproved, isCancelled, ...booking } = raw
+  return { ...booking, status: getBookingStatus({ isApproved, isCancelled }) }
+}
+
+const normalizePage = (page) => ({ items: page.items.map(normalizeBooking), total: page.total })
+
+export const meetingRoomApi = {
+  async rooms() {
+    if (__USE_MOCK__) {
+      const { mockRooms } = await import('./meetingRoomMock')
+      return (await mockRooms()).map(normalizeRoom)
+    }
+    const { data } = await http.get(endpoints.meetingRooms.rooms)
+    return data.map(normalizeRoom)
+  },
+  async list(params) {
+    if (__USE_MOCK__) {
+      const { mockList } = await import('./meetingRoomMock')
+      return normalizePage(await mockList(params))
+    }
+    const { data } = await http.get(endpoints.meetingRooms.bookings, {
+      params: {
+        status: params.status || undefined,
+        search: params.search || undefined,
+        from: params.from || undefined,
+        to: params.to || undefined,
+        sort: params.sort || undefined,
+        page: params.page,
+        pageSize: params.pageSize,
+      },
+    })
+    return normalizePage(data)
+  },
+  async get(id) {
+    if (__USE_MOCK__) {
+      const { mockGet } = await import('./meetingRoomMock')
+      return normalizeBooking(await mockGet(id))
+    }
+    const { data } = await http.get(endpoints.meetingRooms.item(id))
+    return normalizeBooking(data)
+  },
+  /** Returns one booking per day of the request. */
+  async create(input) {
+    if (__USE_MOCK__) {
+      const { mockCreate } = await import('./meetingRoomMock')
+      return (await mockCreate(input)).map(normalizeBooking)
+    }
+    const { data } = await http.post(endpoints.meetingRooms.bookings, input)
+    return (Array.isArray(data) ? data : [data]).map(normalizeBooking)
+  },
+  async update(id, input) {
+    if (__USE_MOCK__) {
+      const { mockUpdate } = await import('./meetingRoomMock')
+      return normalizeBooking(await mockUpdate(id, input))
+    }
+    const { data } = await http.put(endpoints.meetingRooms.item(id), input)
+    return normalizeBooking(data)
+  },
+  async cancel(id) {
+    if (__USE_MOCK__) {
+      const { mockCancel } = await import('./meetingRoomMock')
+      return normalizeBooking(await mockCancel(id))
+    }
+    const { data } = await http.post(endpoints.meetingRooms.cancel(id))
+    return normalizeBooking(data)
+  },
+  /** Adds a comment to the booking's timeline. */
+  async addComment(id, message) {
+    if (__USE_MOCK__) {
+      const { mockAddComment } = await import('./meetingRoomMock')
+      return mockAddComment(id, message)
+    }
+    const { data } = await http.post(endpoints.meetingRooms.comments(id), { message })
+    return data
+  },
+  /** Approved bookings of every employee, as calendar events. */
+  async calendar(params) {
+    if (__USE_MOCK__) {
+      const { mockCalendar } = await import('./meetingRoomMock')
+      return mockCalendar(params)
+    }
+    const { data } = await http.get(endpoints.meetingRooms.calendar, {
+      params: { from: params.from, to: params.to, roomId: params.roomId || undefined },
+    })
+    return data
+  },
+  /** A 409 from the server means the slot clashes; it is returned as `{ available: false }`. */
+  async availability(params) {
+    if (__USE_MOCK__) {
+      const { mockAvailability } = await import('./meetingRoomMock')
+      return mockAvailability(params)
+    }
+    try {
+      await http.post(endpoints.meetingRooms.availability, params)
+      return { available: true }
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        return { available: false, message: error.message }
+      }
+      throw error
+    }
+  },
+  async insights(params) {
+    if (__USE_MOCK__) {
+      const { mockInsights } = await import('./meetingRoomMock')
+      return mockInsights(params)
+    }
+    const { data } = await http.get(endpoints.meetingRooms.insights, {
+      params: { from: params.from, to: params.to },
+    })
+    return data
+  },
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/api/meetingRoomMock.js
+import { ApiError } from '@/lib/api-error'
+import { formatDate } from '@/lib/date'
+import { readJson, writeJson } from '@/lib/storage'
+import { addDays, eachDay, formatTime, toMinutes, todayLocal, weekdayIndex } from '../format'
+import { getBookingStatus } from '../status'
+
+/** Dev-only sample data. Room names come from the old portal; capacities and people are invented. */
+const STORAGE_KEY = 'ib-meeting-room-bookings-v2'
+const ME = 'me'
+
+function room(id, name, location, capacity, facilities) {
+  return { id, name, location, capacity, facilities }
+}
+
+const rooms = [
+  room('board-room-corp-1', 'Board Room', 'Corp-I', 20, ['Projector', 'Video conferencing']),
+  room('mapple', 'Mapple', 'Corp-I', 8, ['TV screen', 'Whiteboard']),
+  room('ruby', 'Ruby', 'Corp-I', 6, ['Whiteboard']),
+  room('tulip', 'Tulip', 'Corp-I', 10, ['Projector', 'Whiteboard']),
+  room('sapphire', 'Sapphire', 'Corp-I', 12, ['Projector', 'Video conferencing']),
+  room('saffron', 'SAFFRON', 'Corp-II', 8, ['TV screen', 'Whiteboard']),
+  room('blue-bell', 'BLUE BELL', 'Corp-II', 10, ['Projector', 'Whiteboard']),
+  room('apricot', 'APRICOT', 'Corp-II', 6, ['Whiteboard']),
+  room('daisy', 'DAISY', 'Corp-II', 4, ['TV screen']),
+  room('executive-zone', 'Executive Zone', 'CET', 14, ['Projector', 'Video conferencing']),
+  room('board-room-cet', 'Board Room', 'CET', 16, ['Projector', 'Video conferencing']),
+]
+
+const roomLabel = (item) => `${item.name} (${item.location})`
+const findRoom = (id) => rooms.find((item) => item.id === id)
+
+/** Seed entries use stable ids so React keys do not change between reads. */
+function entry(type, message, actor, hoursAgo) {
+  return {
+    id: `${type}-${hoursAgo}`,
+    type,
+    message,
+    actor,
+    at: new Date(Date.now() - hoursAgo * 3_600_000).toISOString(),
+  }
+}
+
+function liveEntry(type, message) {
+  return {
+    id: `${type}-${Date.now()}`,
+    type,
+    message,
+    actor: 'You',
+    at: new Date().toISOString(),
+  }
+}
+
+function booking(fields) {
+  return {
+    ownerId: 'other',
+    requesterName: 'A. Mehta',
+    department: 'Operations',
+    persons: 4,
+    additionalRequest: '',
+    isApproved: true,
+    isCancelled: false,
+    managerRemarks: '',
+    createdOn: new Date().toISOString(),
+    timeline: [],
+    ...fields,
+    roomName: roomLabel(findRoom(fields.roomId)),
+  }
+}
+
+function buildSeed() {
+  const day = (offset) => addDays(todayLocal(), offset)
+  const mine = { ownerId: ME, requesterName: 'You', department: 'Your department' }
+  const created = (hours) => entry('created', 'Request created', 'You', hours)
+  const approved = (hours) =>
+    entry('approved', 'Approved by the Meeting Room Manager', 'Meeting Room Manager', hours)
+
+  const names = ['A. Mehta', 'R. Iyer', 'S. Khan', 'P. Nair', 'D. Shah', 'K. Rao']
+  const departments = [
+    'Finance',
+    'Operations',
+    'Sales',
+    'Information Technology',
+    'HR',
+    'Marketing',
+  ]
+  const titles = ['Project review', 'Client call', 'Sprint planning', 'Budget meeting', 'Training']
+  const others = Array.from({ length: 18 }, (_, i) => {
+    const start = 8 + ((i * 5) % 9)
+    return booking({
+      id: `MR-2${String(i).padStart(3, '0')}`,
+      roomId: rooms[(i * 3) % rooms.length].id,
+      date: day(((i * 7) % 41) - 20),
+      startTime: `${String(start).padStart(2, '0')}:00`,
+      endTime: `${String(start + 1).padStart(2, '0')}:30`,
+      title: titles[i % titles.length],
+      persons: 3 + (i % 5),
+      requesterName: names[i % names.length],
+      department: departments[i % departments.length],
+    })
+  })
+
+  return [
+    booking({
+      ...mine,
+      id: 'MR-1001',
+      roomId: 'saffron',
+      date: day(3),
+      startTime: '10:00',
+      endTime: '11:30',
+      title: 'Quarterly planning',
+      persons: 8,
+      additionalRequest: 'Please arrange a projector.',
+      isApproved: null,
+      timeline: [created(3)],
+    }),
+    booking({
+      ...mine,
+      id: 'MR-1002',
+      roomId: 'blue-bell',
+      date: day(1),
+      startTime: '15:00',
+      endTime: '16:00',
+      title: 'Vendor catch-up',
+      persons: 5,
+      timeline: [created(30), approved(26)],
+    }),
+    booking({
+      ...mine,
+      id: 'MR-1003',
+      roomId: 'executive-zone',
+      date: day(2),
+      startTime: '09:00',
+      endTime: '10:00',
+      title: 'Client visit',
+      persons: 6,
+      isApproved: false,
+      managerRemarks: 'The room is reserved for a leadership event.',
+      timeline: [
+        created(50),
+        entry('rejected', 'Rejected by the Meeting Room Manager', 'Meeting Room Manager', 44),
+      ],
+    }),
+    booking({
+      ...mine,
+      id: 'MR-1004',
+      roomId: 'daisy',
+      date: day(5),
+      startTime: '12:00',
+      endTime: '13:00',
+      title: 'Hiring panel',
+      persons: 4,
+      isCancelled: true,
+      timeline: [
+        created(80),
+        approved(70),
+        entry('cancelled', 'You cancelled this booking', 'You', 20),
+      ],
+    }),
+    booking({
+      ...mine,
+      id: 'MR-0999',
+      roomId: 'ruby',
+      date: day(-3),
+      startTime: '09:30',
+      endTime: '10:00',
+      title: 'Team stand-up',
+      persons: 4,
+      timeline: [created(120), approved(110)],
+    }),
+    ...others,
+  ]
+}
+
+const delay = () => new Promise((resolve) => setTimeout(resolve, 250))
+const load = () => readJson(STORAGE_KEY) ?? buildSeed()
+const save = (items) => writeJson(STORAGE_KEY, items)
+const sortKey = (item) => `${item.date}T${item.startTime}`
+
+/** Only Accepted bookings block a slot; Pending ones do not. */
+function findClash(items, { roomId, date, startTime, endTime, excludeId }) {
+  return items.find(
+    (item) =>
+      item.roomId === roomId &&
+      item.date === date &&
+      item.id !== excludeId &&
+      item.isApproved === true &&
+      !item.isCancelled &&
+      startTime < item.endTime &&
+      endTime > item.startTime,
+  )
+}
+
+function clashMessage(clash) {
+  return `${clash.roomName} is already booked on ${formatDate(`${clash.date}T00:00`)} from ${formatTime(clash.startTime)} to ${formatTime(clash.endTime)}.`
+}
+
+export async function mockRooms() {
+  await delay()
+  return rooms
+}
+
+export async function mockList(params) {
+  await delay()
+  const search = (params.search ?? '').trim().toLowerCase()
+  const direction = params.sort === 'dateAsc' ? 1 : -1
+  const filtered = load()
+    .filter(
+      (item) =>
+        item.ownerId === ME &&
+        (!params.status || getBookingStatus(item) === params.status) &&
+        (!params.from || item.date >= params.from) &&
+        (!params.to || item.date <= params.to) &&
+        (!search || [item.title, item.roomName, item.id].join(' ').toLowerCase().includes(search)),
+    )
+    .sort((a, b) => direction * sortKey(a).localeCompare(sortKey(b)))
+  const start = (params.page - 1) * params.pageSize
+  return { items: filtered.slice(start, start + params.pageSize), total: filtered.length }
+}
+
+export async function mockGet(id) {
+  await delay()
+  const found = load().find((item) => item.id === id && item.ownerId === ME)
+  if (!found) throw new ApiError('Booking not found.', 404)
+  return found
+}
+
+export async function mockAvailability(params) {
+  await delay()
+  const items = load()
+  for (const date of eachDay(params.startDate, params.endDate)) {
+    const clash = findClash(items, { ...params, date })
+    if (clash) return { available: false, message: clashMessage(clash) }
+  }
+  return { available: true }
+}
+
+/** A multi-day request creates one Pending row per day. */
+export async function mockCreate(input) {
+  const target = findRoom(input.roomId)
+  if (!target) throw new ApiError('The selected room was not found.', 404)
+  if (input.persons > target.capacity) {
+    throw new ApiError(`${target.name} seats up to ${target.capacity} people.`, 400)
+  }
+  const availability = await mockAvailability(input)
+  if (!availability.available) throw new ApiError(availability.message, 409)
+  const stamp = Date.now()
+  const created = eachDay(input.startDate, input.endDate).map((date, index) =>
+    booking({
+      ownerId: ME,
+      requesterName: 'You',
+      department: 'Your department',
+      id: `MR-${stamp}-${index + 1}`,
+      roomId: input.roomId,
+      date,
+      startTime: input.startTime,
+      endTime: input.endTime,
+      title: input.title,
+      persons: input.persons,
+      additionalRequest: input.additionalRequest,
+      isApproved: null,
+      timeline: [liveEntry('created', 'Request created')],
+    }),
+  )
+  save([...created, ...load()])
+  return created
+}
+
+export async function mockUpdate(id, input) {
+  await delay()
+  const items = load()
+  const existing = items.find((item) => item.id === id && item.ownerId === ME)
+  if (!existing) throw new ApiError('Booking not found.', 404)
+  if (getBookingStatus(existing) !== 'Pending') {
+    throw new ApiError('Only pending bookings can be edited.', 400)
+  }
+  const target = findRoom(input.roomId)
+  if (!target) throw new ApiError('The selected room was not found.', 404)
+  if (input.persons > target.capacity) {
+    throw new ApiError(`${target.name} seats up to ${target.capacity} people.`, 400)
+  }
+  const clash = findClash(items, { ...input, excludeId: id })
+  if (clash) throw new ApiError(clashMessage(clash), 409)
+  const updated = {
+    ...existing,
+    ...input,
+    roomName: roomLabel(target),
+    timeline: [...existing.timeline, liveEntry('edited', 'Booking details updated')],
+  }
+  save(items.map((item) => (item.id === id ? updated : item)))
+  return updated
+}
+
+export async function mockCancel(id) {
+  await delay()
+  const items = load()
+  const existing = items.find((item) => item.id === id && item.ownerId === ME)
+  if (!existing) throw new ApiError('Booking not found.', 404)
+  const updated = {
+    ...existing,
+    isCancelled: true,
+    timeline: [...existing.timeline, liveEntry('cancelled', 'You cancelled this booking')],
+  }
+  save(items.map((item) => (item.id === id ? updated : item)))
+  return updated
+}
+
+export async function mockAddComment(id, message) {
+  await delay()
+  const items = load()
+  const existing = items.find((item) => item.id === id && item.ownerId === ME)
+  if (!existing) throw new ApiError('Booking not found.', 404)
+  const added = liveEntry('comment', message)
+  save(
+    items.map((item) =>
+      item.id === id ? { ...existing, timeline: [...existing.timeline, added] } : item,
+    ),
+  )
+  return added
+}
+
+export async function mockCalendar({ from, to, roomId }) {
+  await delay()
+  return load()
+    .filter(
+      (item) =>
+        item.isApproved === true &&
+        !item.isCancelled &&
+        item.date >= from &&
+        item.date <= to &&
+        (!roomId || item.roomId === roomId),
+    )
+    .sort((a, b) => sortKey(a).localeCompare(sortKey(b)))
+    .map((item) => ({
+      id: item.id,
+      roomId: item.roomId,
+      roomName: item.roomName,
+      date: item.date,
+      startTime: item.startTime,
+      endTime: item.endTime,
+      title: item.title,
+      requesterName: item.requesterName,
+      department: item.department,
+      isMine: item.ownerId === ME,
+    }))
+}
+
+export async function mockInsights({ from, to }) {
+  await delay()
+  const inRange = load().filter((item) => item.date >= from && item.date <= to)
+  const approved = inRange.filter((item) => item.isApproved === true && !item.isCancelled)
+  const roomCounts = new Map()
+  const hourCounts = new Map()
+  const dayCounts = new Map()
+  for (const item of approved) {
+    roomCounts.set(item.roomId, (roomCounts.get(item.roomId) ?? 0) + 1)
+    const first = Math.floor(toMinutes(item.startTime) / 60)
+    const last = Math.ceil(toMinutes(item.endTime) / 60)
+    for (let hour = first; hour < last; hour++) {
+      hourCounts.set(hour, (hourCounts.get(hour) ?? 0) + 1)
+    }
+    const dayIndex = weekdayIndex(item.date)
+    dayCounts.set(dayIndex, (dayCounts.get(dayIndex) ?? 0) + 1)
+  }
+  const byStatus = { Pending: 0, Accepted: 0, Rejected: 0, Cancelled: 0 }
+  for (const item of inRange) {
+    if (item.ownerId === ME) byStatus[getBookingStatus(item)] += 1
+  }
+  return {
+    byRoom: [...roomCounts]
+      .map(([roomId, count]) => {
+        const found = findRoom(roomId)
+        return { roomId, roomName: found?.name ?? roomId, location: found?.location ?? '', count }
+      })
+      .sort((a, b) => b.count - a.count || a.roomName.localeCompare(b.roomName)),
+    byHour: [...hourCounts].map(([hour, count]) => ({ hour, count })),
+    byWeekday: [...dayCounts].map(([day, count]) => ({ day, count })),
+    byStatus,
+  }
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/calendarNav.js
+import {
+  addDays,
+  endOfMonth,
+  formatDateLong,
+  formatDayMonth,
+  formatMonthYear,
+  monthGridRange,
+  shiftMonth,
+  startOfMonth,
+  startOfWeek,
+} from './format'
+
+/** Date range a calendar view needs for the given anchor day. */
+export function rangeFor(view, anchor) {
+  if (view === 'month') return monthGridRange(anchor)
+  if (view === 'week') {
+    const from = startOfWeek(anchor)
+    return { from, to: addDays(from, 6) }
+  }
+  if (view === 'day') return { from: anchor, to: anchor }
+  return { from: startOfMonth(anchor), to: endOfMonth(anchor) }
+}
+
+/** Move the anchor one step (direction -1 or 1) for the given view. */
+export function shift(view, anchor, direction) {
+  if (view === 'week') return addDays(anchor, 7 * direction)
+  if (view === 'day') return addDays(anchor, direction)
+  return shiftMonth(anchor, direction)
+}
+
+export function titleFor(view, anchor) {
+  if (view === 'week') {
+    const from = startOfWeek(anchor)
+    return `${formatDayMonth(from)} - ${formatDayMonth(addDays(from, 6))}`
+  }
+  if (view === 'day') return formatDateLong(anchor)
+  return formatMonthYear(anchor)
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/components/AvailabilityNotice.jsx
+import { CircleAlert, CircleCheck, Info, LoaderCircle } from 'lucide-react'
+import { cn } from '@/lib/utils'
+
+const states = {
+  idle: {
+    icon: Info,
+    className: 'bg-muted text-muted-foreground',
+    text: 'Pick a room, dates and times to check availability.',
+  },
+  checking: {
+    icon: LoaderCircle,
+    className: 'bg-muted text-muted-foreground',
+    text: 'Checking availability...',
+    spin: true,
+  },
+  available: {
+    icon: CircleCheck,
+    className: 'bg-success-soft text-success',
+    text: 'This slot is free. Your request will go to the Meeting Room Manager for approval.',
+  },
+  unavailable: { icon: CircleAlert, className: 'bg-danger-soft text-danger' },
+  error: {
+    icon: CircleAlert,
+    className: 'bg-warning-soft text-warning',
+    text: 'Could not check availability right now. You can still submit; it is checked again on submit.',
+  },
+}
+
+export function AvailabilityNotice({ state, message }) {
+  const { icon: Icon, className, text, spin } = states[state]
+  return (
+    <p
+      role="status"
+      className={cn('flex items-start gap-2.5 rounded-xl px-3.5 py-2.5 text-sm', className)}
+    >
+      <Icon className={cn('mt-0.5 size-4 shrink-0', spin && 'animate-spin')} aria-hidden="true" />
+      <span>{state === 'unavailable' ? message : text}</span>
+    </p>
+  )
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/components/BookingCard.jsx
+import { CalendarX, Clock, DoorOpen, Eye, Pencil, Users } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Button } from '@/components/ui/button'
+import { dateParts, formatTimeRange } from '../format'
+import { canCancelBooking, canEditBooking } from '../status'
+import { MEETING_ROOMS_PATH } from '../types'
+import { BookingStatusBadge } from './BookingStatusBadge'
+
+/** One booking as a list item. Pass `onCancel` to show the cancel action. */
+export function BookingCard({ booking, onCancel }) {
+  const { day, month } = dateParts(booking.date)
+  const path = `${MEETING_ROOMS_PATH}/${encodeURIComponent(booking.id)}`
+  return (
+    <li className="flex flex-wrap items-center gap-4 rounded-2xl border border-border bg-card p-4 shadow-sm transition hover:shadow-md sm:flex-nowrap">
+      <div
+        aria-hidden="true"
+        className="grid size-16 shrink-0 place-content-center rounded-2xl bg-primary-soft text-center text-primary"
+      >
+        <span className="text-2xl leading-none font-extrabold">{day}</span>
+        <span className="mt-1 text-xs font-semibold uppercase">{month}</span>
+      </div>
+      <div className="min-w-0 flex-1">
+        <h3 className="truncate font-semibold">
+          <Link to={path} className="hover:underline">
+            {booking.title}
+          </Link>
+        </h3>
+        <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">
+          <DoorOpen className="size-4" aria-hidden="true" />
+          {booking.roomName}
+        </p>
+        <p className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+          <span className="flex items-center gap-1.5">
+            <Clock className="size-4 text-primary" aria-hidden="true" />
+            {formatTimeRange(booking.startTime, booking.endTime)}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <Users className="size-4 text-primary" aria-hidden="true" />
+            {booking.persons} persons
+          </span>
+        </p>
+      </div>
+      <div className="flex flex-wrap items-center gap-3 max-sm:w-full max-sm:justify-between">
+        <BookingStatusBadge status={booking.status} />
+        <div className="flex gap-2">
+          <Button asChild variant="outline" size="icon" title="View booking">
+            <Link to={path} aria-label={`View booking ${booking.title}`}>
+              <Eye aria-hidden="true" />
+            </Link>
+          </Button>
+          {canEditBooking(booking) && (
+            <Button asChild variant="outline" size="icon" title="Edit booking">
+              <Link to={`${path}/edit`} aria-label={`Edit booking ${booking.title}`}>
+                <Pencil aria-hidden="true" />
+              </Link>
+            </Button>
+          )}
+          {onCancel && canCancelBooking(booking) && (
+            <Button
+              variant="outline"
+              size="icon"
+              title="Cancel booking"
+              aria-label={`Cancel booking ${booking.title}`}
+              onClick={() => onCancel(booking)}
+            >
+              <CalendarX aria-hidden="true" />
+            </Button>
+          )}
+        </div>
+      </div>
+    </li>
+  )
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/components/BookingForm.jsx
+import { zodResolver } from '@hookform/resolvers/zod'
+import { ArrowRight, CalendarDays, Clock, MessageSquare, Pencil, Users } from 'lucide-react'
+import { useForm, useWatch } from 'react-hook-form'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { Input, Textarea } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { useDebouncedValue } from '@/hooks/useDebouncedValue'
+import { getErrorMessage } from '@/lib/api-error'
+import { bookingFormSchema, MAX_BOOKING_DAYS, REQUEST_MAX_LENGTH } from '../api/meetingRoom.schemas'
+import { daysBetween, todayLocal } from '../format'
+import { useAvailability } from '../hooks'
+import { AvailabilityNotice } from './AvailabilityNotice'
+import { RoomBookingsPanel } from './RoomBookingsPanel'
+import { RoomPicker } from './RoomPicker'
+
+function Section({ step, title, description, children }) {
+  return (
+    <section
+      aria-labelledby={`step-${step}`}
+      className="rounded-2xl border border-border bg-card p-5 shadow-sm sm:p-6"
+    >
+      <div className="mb-5 flex items-start gap-3.5">
+        <span
+          aria-hidden="true"
+          className="grid size-8 shrink-0 place-items-center rounded-full bg-primary text-sm font-bold text-primary-foreground"
+        >
+          {step}
+        </span>
+        <div>
+          <h2 id={`step-${step}`} className="text-lg font-bold tracking-tight">
+            {title}
+          </h2>
+          <p className="text-sm text-muted-foreground">{description}</p>
+        </div>
+      </div>
+      {children}
+    </section>
+  )
+}
+
+function Field({ id, label, required = true, error, hint, children }) {
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>
+        {label}
+        {required && <span className="text-destructive"> *</span>}
+      </Label>
+      {children}
+      {error && (
+        <p id={`${id}-error`} className="text-sm text-destructive">
+          {error}
+        </p>
+      )}
+      {hint}
+    </div>
+  )
+}
+
+const approvalSteps = [
+  'You submit the request.',
+  'The Meeting Room Manager reviews it.',
+  'You get an email and a notification with the decision.',
+]
+
+/**
+ * One page for create and edit:
+ *   - the room is chosen at the top (colour-coded tiles),
+ *   - date/time and meeting details are on the left,
+ *   - the chosen room's bookings (day, week, month, list) are on the right.
+ * In edit mode there is a single date (no end date).
+ * `onSubmit` receives values with `persons` as a number and `endDate` filled in.
+ */
+export function BookingForm({
+  mode,
+  rooms,
+  roomsPending,
+  defaultValues,
+  excludeId,
+  isSubmitting,
+  submitError,
+  onSubmit,
+  onCancel,
+}) {
+  const isEdit = mode === 'edit'
+  const {
+    register,
+    handleSubmit,
+    control,
+    setError,
+    setValue,
+    formState: { errors },
+  } = useForm({ resolver: zodResolver(bookingFormSchema), defaultValues })
+  const [roomId, startDate, endDate, startTime, endTime, additionalRequest] = useWatch({
+    control,
+    name: ['roomId', 'startDate', 'endDate', 'startTime', 'endTime', 'additionalRequest'],
+  })
+  const room = rooms.find((item) => item.id === roomId)
+  const effectiveEnd = isEdit ? startDate : endDate || startDate
+
+  // Check availability once everything needed is filled in and valid.
+  const ready = Boolean(
+    roomId &&
+    startDate &&
+    startTime &&
+    endTime &&
+    startDate >= todayLocal() &&
+    effectiveEnd >= startDate &&
+    daysBetween(startDate, effectiveEnd) <= MAX_BOOKING_DAYS &&
+    endTime > startTime,
+  )
+  const slot = ready ? [roomId, startDate, effectiveEnd, startTime, endTime].join('|') : ''
+  const debouncedSlot = useDebouncedValue(slot)
+  const [slotRoom, slotStart, slotEnd, slotFrom, slotTo] = debouncedSlot.split('|')
+  const availability = useAvailability(
+    {
+      roomId: slotRoom,
+      startDate: slotStart,
+      endDate: slotEnd,
+      startTime: slotFrom,
+      endTime: slotTo,
+      excludeId,
+    },
+    debouncedSlot !== '',
+  )
+  let availabilityState = 'idle'
+  if (slot) {
+    if (slot !== debouncedSlot || availability.isFetching) availabilityState = 'checking'
+    else if (availability.isError) availabilityState = 'error'
+    else if (availability.data?.available === false) availabilityState = 'unavailable'
+    else if (availability.data?.available) availabilityState = 'available'
+    else availabilityState = 'checking'
+  }
+
+  const invalid = (name) => (errors[name] ? true : undefined)
+  const describedBy = (name) => (errors[name] ? `${name}-error` : undefined)
+
+  function submit(values) {
+    const persons = Number(values.persons)
+    if (room && persons > room.capacity) {
+      setError('persons', { message: `${room.name} seats up to ${room.capacity} people.` })
+      return
+    }
+    onSubmit({
+      ...values,
+      persons,
+      endDate: isEdit ? values.startDate : values.endDate || values.startDate,
+    })
+  }
+
+  return (
+    <form onSubmit={handleSubmit(submit)} noValidate className="grid gap-5">
+      <Section
+        step={1}
+        title="Choose a room"
+        description="Each room has its own colour. The bookings of the room you pick are listed on the right."
+      >
+        <RoomPicker
+          rooms={rooms}
+          isPending={roomsPending}
+          errorMessage={errors.roomId?.message}
+          register={register}
+        />
+      </Section>
+
+      <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        <div className="grid gap-5">
+          <Section
+            step={2}
+            title="Date and time"
+            description={
+              isEdit
+                ? 'Change the day or the time slot.'
+                : 'Leave the end date blank for one day. A multi-day request creates one request per day.'
+            }
+          >
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field id="startDate" label="Start date" error={errors.startDate?.message}>
+                <Input
+                  id="startDate"
+                  type="date"
+                  min={todayLocal()}
+                  icon={<CalendarDays />}
+                  aria-invalid={invalid('startDate')}
+                  aria-describedby={describedBy('startDate')}
+                  {...register('startDate')}
+                />
+              </Field>
+              {!isEdit && (
+                <Field
+                  id="endDate"
+                  label="End date"
+                  required={false}
+                  error={errors.endDate?.message}
+                >
+                  <Input
+                    id="endDate"
+                    type="date"
+                    min={startDate || todayLocal()}
+                    icon={<CalendarDays />}
+                    aria-invalid={invalid('endDate')}
+                    aria-describedby={describedBy('endDate')}
+                    {...register('endDate')}
+                  />
+                </Field>
+              )}
+              <Field id="startTime" label="Start time" error={errors.startTime?.message}>
+                <Input
+                  id="startTime"
+                  type="time"
+                  icon={<Clock />}
+                  aria-invalid={invalid('startTime')}
+                  aria-describedby={describedBy('startTime')}
+                  {...register('startTime')}
+                />
+              </Field>
+              <Field id="endTime" label="End time" error={errors.endTime?.message}>
+                <Input
+                  id="endTime"
+                  type="time"
+                  icon={<Clock />}
+                  aria-invalid={invalid('endTime')}
+                  aria-describedby={describedBy('endTime')}
+                  {...register('endTime')}
+                />
+              </Field>
+            </div>
+            <div className="mt-4">
+              <AvailabilityNotice state={availabilityState} message={availability.data?.message} />
+            </div>
+          </Section>
+
+          <Section
+            step={3}
+            title="Meeting details"
+            description="Tell us what the meeting is about."
+          >
+            <div className="grid gap-4">
+              <Field id="title" label="Meeting title" error={errors.title?.message}>
+                <Input
+                  id="title"
+                  icon={<Pencil />}
+                  placeholder="e.g. Weekly team sync"
+                  aria-invalid={invalid('title')}
+                  aria-describedby={describedBy('title')}
+                  {...register('title')}
+                />
+              </Field>
+              <Field
+                id="persons"
+                label="Number of persons"
+                error={errors.persons?.message}
+                hint={
+                  room && (
+                    <small className="block text-muted-foreground">
+                      {room.name} seats up to {room.capacity}.
+                    </small>
+                  )
+                }
+              >
+                <Input
+                  id="persons"
+                  inputMode="numeric"
+                  icon={<Users />}
+                  placeholder="How many people will attend?"
+                  aria-invalid={invalid('persons')}
+                  aria-describedby={describedBy('persons')}
+                  {...register('persons')}
+                />
+              </Field>
+              <Field
+                id="additionalRequest"
+                label="Additional request"
+                required={false}
+                error={errors.additionalRequest?.message}
+                hint={
+                  <small className="block text-muted-foreground">
+                    {REQUEST_MAX_LENGTH - (additionalRequest ?? '').length} characters remaining
+                  </small>
+                }
+              >
+                <Textarea
+                  id="additionalRequest"
+                  icon={<MessageSquare />}
+                  maxLength={REQUEST_MAX_LENGTH}
+                  placeholder="Projector, refreshments, seating... (optional)"
+                  className="min-h-24"
+                  aria-invalid={invalid('additionalRequest')}
+                  aria-describedby={describedBy('additionalRequest')}
+                  {...register('additionalRequest')}
+                />
+              </Field>
+            </div>
+          </Section>
+
+          {submitError != null && (
+            <p role="alert" className="rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">
+              {getErrorMessage(submitError)}
+            </p>
+          )}
+
+          <div className="flex flex-wrap justify-end gap-3">
+            <Button type="button" variant="outline" className="min-w-28" onClick={onCancel}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={isSubmitting || availabilityState === 'unavailable'}
+              className="min-w-44"
+            >
+              {isSubmitting ? 'Saving...' : isEdit ? 'Save Changes' : 'Submit Request'}
+              {!isSubmitting && <ArrowRight aria-hidden="true" />}
+            </Button>
+          </div>
+        </div>
+
+        <aside className="grid gap-5 xl:sticky xl:top-24">
+          <RoomBookingsPanel
+            rooms={rooms}
+            roomId={roomId}
+            onRoomChange={(value) => setValue('roomId', value, { shouldValidate: Boolean(value) })}
+          />
+          <Card className="p-5">
+            <h2 className="mb-3 text-lg font-bold tracking-tight">What happens next</h2>
+            <ol className="grid gap-3 text-sm">
+              {approvalSteps.map((text, index) => (
+                <li key={text} className="flex items-start gap-3">
+                  <span
+                    aria-hidden="true"
+                    className="grid size-6 shrink-0 place-items-center rounded-full bg-primary-soft text-xs font-bold text-primary"
+                  >
+                    {index + 1}
+                  </span>
+                  <span>{text}</span>
+                </li>
+              ))}
+            </ol>
+          </Card>
+        </aside>
+      </div>
+    </form>
+  )
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/components/BookingStatusBadge.jsx
+import { CalendarX, CircleCheck, CircleX, Clock } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
+
+const config = {
+  Pending: { variant: 'warning', icon: Clock },
+  Accepted: { variant: 'success', icon: CircleCheck },
+  Rejected: { variant: 'danger', icon: CircleX },
+  Cancelled: { variant: 'neutral', icon: CalendarX },
+}
+
+export function BookingStatusBadge({ status }) {
+  const { variant, icon: Icon } = config[status]
+  return (
+    <Badge variant={variant}>
+      <Icon aria-hidden="true" />
+      {status}
+    </Badge>
+  )
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/components/BookingTimeline.jsx
+import { CalendarX, CircleCheck, CirclePlus, CircleX, MessageSquare, Pencil } from 'lucide-react'
+import { formatDateTime } from '@/lib/date'
+import { cn } from '@/lib/utils'
+
+const icons = {
+  created: CirclePlus,
+  approved: CircleCheck,
+  rejected: CircleX,
+  cancelled: CalendarX,
+  comment: MessageSquare,
+  edited: Pencil,
+}
+
+const tones = {
+  approved: 'bg-success-soft text-success',
+  rejected: 'bg-danger-soft text-danger',
+  cancelled: 'bg-danger-soft text-danger',
+}
+
+/** Oldest first, like a history of what happened to the request. */
+export function BookingTimeline({ entries }) {
+  return (
+    <ol className="relative grid gap-5 before:absolute before:top-2 before:bottom-2 before:left-4 before:w-px before:bg-border">
+      {entries.map((item) => {
+        const Icon = icons[item.type] ?? CirclePlus
+        return (
+          <li key={item.id} className="relative flex gap-3.5">
+            <span
+              className={cn(
+                'relative z-10 grid size-8 shrink-0 place-items-center rounded-full',
+                tones[item.type] ?? 'bg-primary-soft text-primary',
+              )}
+            >
+              <Icon className="size-4" aria-hidden="true" />
+            </span>
+            <div className="min-w-0 pt-0.5">
+              <p className="text-sm font-semibold break-words whitespace-pre-wrap">
+                {item.message}
+              </p>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                {item.actor} &middot; {formatDateTime(item.at)}
+              </p>
+            </div>
+          </li>
+        )
+      })}
+    </ol>
+  )
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/components/BookingsCalendar.jsx
+import { EmptyState } from '@/components/common/EmptyState'
+import { cn } from '@/lib/utils'
+import {
+  addDays,
+  eachDay,
+  formatDateLong,
+  formatTime,
+  formatTimeRange,
+  formatWeekdayDay,
+  monthGridRange,
+  startOfWeek,
+  todayLocal,
+  weekdayLabels,
+} from '../format'
+import { toneStyles } from '../roomTone'
+
+function groupByDate(events) {
+  const groups = new Map()
+  for (const event of events) {
+    const list = groups.get(event.date) ?? []
+    list.push(event)
+    groups.set(event.date, list)
+  }
+  for (const list of groups.values()) list.sort((a, b) => a.startTime.localeCompare(b.startTime))
+  return groups
+}
+
+function EventRow({ event, toneOf }) {
+  return (
+    <li className={cn('rounded-lg px-3 py-2.5 text-sm', toneStyles(toneOf(event.roomId)).event)}>
+      <p className="font-semibold">{formatTimeRange(event.startTime, event.endTime)}</p>
+      <p className="mt-0.5 break-words">{event.title}</p>
+      <p className="text-muted-foreground">
+        {event.roomName} &middot; {event.requesterName}
+        {event.department ? `, ${event.department}` : ''}
+      </p>
+    </li>
+  )
+}
+
+function DayColumn({ date, events, toneOf, header = 'long' }) {
+  const isToday = date === todayLocal()
+  return (
+    <section
+      aria-label={formatDateLong(date)}
+      className="min-w-0 rounded-xl border border-border bg-card"
+    >
+      {header !== 'none' && (
+        <h3
+          className={cn(
+            'rounded-t-xl border-b border-border px-3 py-2 text-sm font-bold',
+            isToday
+              ? 'bg-primary text-primary-foreground'
+              : 'bg-primary-soft text-primary-soft-foreground',
+          )}
+        >
+          {header === 'short' ? formatWeekdayDay(date) : formatDateLong(date)}
+        </h3>
+      )}
+      {events.length === 0 ? (
+        <p className="px-3 py-4 text-sm text-muted-foreground">No bookings.</p>
+      ) : (
+        <ul className="grid gap-2 p-2.5">
+          {events.map((event) => (
+            <EventRow key={event.id} event={event} toneOf={toneOf} />
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
+function MonthView({ anchor, events, toneOf, onPickDay }) {
+  const { from, to } = monthGridRange(anchor)
+  const byDate = groupByDate(events)
+  const month = anchor.slice(0, 7)
+  const today = todayLocal()
+  return (
+    <div className="overflow-x-auto">
+      <div className="grid min-w-[42rem] grid-cols-7 gap-px overflow-hidden rounded-xl border border-border bg-border">
+        {weekdayLabels.map((label) => (
+          <div
+            key={label}
+            className="bg-muted px-2 py-2 text-center text-xs font-bold text-muted-foreground"
+          >
+            {label}
+          </div>
+        ))}
+        {eachDay(from, to).map((date) => {
+          const dayEvents = byDate.get(date) ?? []
+          const inMonth = date.slice(0, 7) === month
+          return (
+            <div key={date} className={cn('min-h-28 bg-card p-1.5', !inMonth && 'bg-muted/50')}>
+              <button
+                type="button"
+                aria-label={`Open ${formatDateLong(date)}`}
+                onClick={() => onPickDay(date)}
+                className={cn(
+                  'mb-1 grid size-7 place-items-center rounded-full text-sm font-semibold hover:bg-secondary',
+                  !inMonth && 'text-muted-foreground',
+                  date === today && 'bg-primary text-primary-foreground hover:bg-primary-hover',
+                )}
+              >
+                {Number(date.slice(8))}
+              </button>
+              <ul className="grid gap-1">
+                {dayEvents.slice(0, 3).map((event) => (
+                  <li
+                    key={event.id}
+                    title={`${event.title} - ${event.roomName}`}
+                    className={cn(
+                      'truncate rounded px-1.5 py-1 text-xs',
+                      toneStyles(toneOf(event.roomId)).event,
+                    )}
+                  >
+                    <b>{formatTime(event.startTime)}</b> {event.roomName}
+                  </li>
+                ))}
+              </ul>
+              {dayEvents.length > 3 && (
+                <button
+                  type="button"
+                  onClick={() => onPickDay(date)}
+                  className="mt-1 px-1 text-xs font-semibold text-primary hover:underline"
+                >
+                  +{dayEvents.length - 3} more
+                </button>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+/** Month, week, day and list views over the same list of events. */
+export function BookingsCalendar({ view, anchor, events, toneOf, onPickDay }) {
+  const byDate = groupByDate(events)
+  if (view === 'month') {
+    return <MonthView anchor={anchor} events={events} toneOf={toneOf} onPickDay={onPickDay} />
+  }
+  if (view === 'week') {
+    const first = startOfWeek(anchor)
+    return (
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-7">
+        {Array.from({ length: 7 }, (_, index) => addDays(first, index)).map((date) => (
+          <DayColumn
+            key={date}
+            date={date}
+            events={byDate.get(date) ?? []}
+            toneOf={toneOf}
+            header="short"
+          />
+        ))}
+      </div>
+    )
+  }
+  if (view === 'day') {
+    return (
+      <DayColumn date={anchor} events={byDate.get(anchor) ?? []} toneOf={toneOf} header="none" />
+    )
+  }
+  const dates = [...byDate.keys()].sort()
+  if (dates.length === 0) return <EmptyState>No approved bookings in this period.</EmptyState>
+  return (
+    <div className="grid gap-3">
+      {dates.map((date) => (
+        <DayColumn key={date} date={date} events={byDate.get(date)} toneOf={toneOf} />
+      ))}
+    </div>
+  )
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/components/CancelBookingDialog.jsx
+import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
+import { getErrorMessage } from '@/lib/api-error'
+import { formatDate } from '@/lib/date'
+import { formatTime } from '../format'
+import { useCancelBooking } from '../hooks'
+
+function CancelBody({ booking, onClose, onCancelled }) {
+  const cancel = useCancelBooking()
+  return (
+    <>
+      <DialogTitle>Cancel this booking?</DialogTitle>
+      <DialogDescription className="mt-1">
+        {booking.title} in {booking.roomName} on {formatDate(`${booking.date}T00:00`)} at{' '}
+        {formatTime(booking.startTime)}.
+        {booking.status === 'Accepted' && ' The Meeting Room Manager will be informed.'}
+      </DialogDescription>
+      {cancel.isError && (
+        <p role="alert" className="mt-4 rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">
+          {getErrorMessage(cancel.error)}
+        </p>
+      )}
+      <div className="mt-6 flex justify-end gap-3">
+        <Button variant="outline" onClick={onClose}>
+          Keep booking
+        </Button>
+        <Button
+          variant="destructive"
+          disabled={cancel.isPending}
+          onClick={() => cancel.mutate(booking.id, { onSuccess: onCancelled })}
+        >
+          {cancel.isPending ? 'Cancelling...' : 'Cancel booking'}
+        </Button>
+      </div>
+    </>
+  )
+}
+
+export function CancelBookingDialog({ booking, onClose, onCancelled }) {
+  return (
+    <Dialog open={booking !== null} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent>
+        {booking && (
+          <CancelBody
+            key={booking.id}
+            booking={booking}
+            onClose={onClose}
+            onCancelled={onCancelled}
+          />
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/components/InsightCharts.jsx
+import { EmptyState } from '@/components/common/EmptyState'
+import { cn } from '@/lib/utils'
+import { bookingStatuses } from '../types'
+
+/**
+ * Vertical bars. `data`: [{ label, title?, value }]. The tallest bars are drawn darker
+ * ("peak"). Drawn with theme colours, no chart library.
+ */
+export function ColumnChart({ data, label }) {
+  const max = Math.max(0, ...data.map((item) => item.value))
+  const summary = data.map((item) => `${item.title ?? item.label}: ${item.value}`).join(', ')
+  return (
+    <div>
+      <div
+        role="img"
+        aria-label={`${label}. ${summary}`}
+        className="flex h-56 items-stretch gap-1.5 border-b border-border sm:gap-3"
+      >
+        {data.map((item) => {
+          const peak = max > 0 && item.value === max
+          return (
+            <div key={item.label} className="flex min-w-0 flex-1 flex-col justify-end">
+              <span className="mb-1 text-center text-xs font-semibold text-foreground">
+                {item.value}
+              </span>
+              <div
+                className={cn(
+                  'w-full rounded-t-md',
+                  item.value === 0 ? 'bg-muted' : peak ? 'bg-sidebar' : 'bg-primary/65',
+                )}
+                style={{
+                  height: item.value === 0 ? '0.25rem' : `${(item.value / max) * 82}%`,
+                }}
+              />
+            </div>
+          )
+        })}
+      </div>
+      <div aria-hidden="true" className="mt-2 flex gap-1.5 sm:gap-3">
+        {data.map((item) => (
+          <span
+            key={item.label}
+            className="min-w-0 flex-1 text-center text-xs text-muted-foreground"
+          >
+            {item.label}
+          </span>
+        ))}
+      </div>
+      <p aria-hidden="true" className="mt-4 flex items-center gap-4 text-xs text-muted-foreground">
+        <span className="flex items-center gap-1.5">
+          <span className="size-2.5 rounded-sm bg-sidebar" /> Peak
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="size-2.5 rounded-sm bg-primary/65" /> Other
+        </span>
+      </p>
+    </div>
+  )
+}
+
+const segmentColours = {
+  Accepted: 'bg-success',
+  Pending: 'bg-tone-amber-border',
+  Rejected: 'bg-danger',
+  Cancelled: 'bg-muted-foreground',
+}
+
+const segmentOrder = ['Accepted', 'Pending', 'Rejected', 'Cancelled']
+
+/** Total line plus one segmented bar. `counts`: { Pending, Accepted, Rejected, Cancelled }. */
+export function StatusSummary({ counts }) {
+  const total = bookingStatuses.reduce((sum, status) => sum + (counts[status] ?? 0), 0)
+  const parts = segmentOrder
+    .filter((status) => counts[status] > 0)
+    .map((status) => `${counts[status]} ${status.toLowerCase()}`)
+  if (total === 0) return <EmptyState>No booking requests in this period.</EmptyState>
+  return (
+    <div>
+      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2 text-sm">
+        <b>
+          {total} {total === 1 ? 'request' : 'requests'} in this period
+        </b>
+        <span className="text-muted-foreground">{parts.join(' · ')}</span>
+      </div>
+      <div
+        role="img"
+        aria-label={`Requests by status: ${parts.join(', ')}`}
+        className="flex h-3 gap-1 overflow-hidden rounded-full"
+      >
+        {segmentOrder.map(
+          (status) =>
+            counts[status] > 0 && (
+              <span
+                key={status}
+                className={cn('rounded-full', segmentColours[status])}
+                style={{ flex: `${counts[status]} 1 0%` }}
+              />
+            ),
+        )}
+      </div>
+    </div>
+  )
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/components/MeetingRoomHeader.jsx
+import { CalendarDays, ClipboardList, LayoutDashboard, Plus } from 'lucide-react'
+import { Link, NavLink, useLocation } from 'react-router-dom'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { cn } from '@/lib/utils'
+import { useMyBookings } from '../hooks'
+import { MEETING_ROOMS_PATH } from '../types'
+
+const tabs = [
+  { to: MEETING_ROOMS_PATH, label: 'Dashboard', icon: LayoutDashboard, end: true },
+  { to: `${MEETING_ROOMS_PATH}/calendar`, label: 'Calendar', icon: CalendarDays },
+  { to: `${MEETING_ROOMS_PATH}/my-bookings`, label: 'My bookings', icon: ClipboardList },
+]
+
+/**
+ * Header shared by every meeting room page: title (the page's single h1), the "Book a room"
+ * button and the section tabs, all in one card.
+ */
+export function MeetingRoomHeader({ icon, title, description }) {
+  const { pathname } = useLocation()
+  const booking = pathname.endsWith('/create') || pathname.endsWith('/edit')
+  const pending = useMyBookings({ status: 'Pending', page: 1, pageSize: 1 })
+  const pendingCount = pending.data?.total ?? 0
+  return (
+    <Card className="mb-5 overflow-hidden">
+      <div className="flex flex-wrap items-center gap-4 px-5 pt-5 sm:gap-5 sm:px-7 sm:pt-6">
+        <div
+          aria-hidden="true"
+          className="grid size-14 shrink-0 place-items-center rounded-2xl bg-primary-soft text-primary [&_svg]:size-7"
+        >
+          {icon}
+        </div>
+        <div className="min-w-0 flex-1">
+          <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1>
+          <p className="mt-1 text-muted-foreground">{description}</p>
+        </div>
+        {!booking && (
+          <Button asChild className="max-sm:w-full">
+            <Link to={`${MEETING_ROOMS_PATH}/create`}>
+              <Plus aria-hidden="true" /> Book a room
+            </Link>
+          </Button>
+        )}
+      </div>
+      <nav aria-label="Meeting room sections" className="mt-4 overflow-x-auto px-3 sm:px-5">
+        <ul className="flex min-w-max gap-1">
+          {tabs.map(({ to, label, icon: Icon, end }) => (
+            <li key={to}>
+              <NavLink
+                to={to}
+                end={end}
+                className={({ isActive }) =>
+                  cn(
+                    '-mb-px flex min-h-12 items-center gap-2 border-b-2 px-4 text-sm font-semibold whitespace-nowrap transition-colors',
+                    isActive
+                      ? 'border-primary text-primary'
+                      : 'border-transparent text-muted-foreground hover:text-foreground',
+                  )
+                }
+              >
+                <Icon className="size-4" aria-hidden="true" />
+                {label}
+                {to.endsWith('my-bookings') && pendingCount > 0 && (
+                  <span className="rounded-full bg-warning-soft px-2 py-0.5 text-xs font-bold text-warning">
+                    {pendingCount} pending
+                  </span>
+                )}
+              </NavLink>
+            </li>
+          ))}
+        </ul>
+      </nav>
+      <div className="border-t border-border" />
+    </Card>
+  )
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/components/RoomBookingsPanel.jsx
+import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { useState } from 'react'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { NativeSelect } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Skeleton } from '@/components/ui/skeleton'
+import { getErrorMessage } from '@/lib/api-error'
+import { cn } from '@/lib/utils'
+import { rangeFor, shift, titleFor } from '../calendarNav'
+import { todayLocal } from '../format'
+import { useCalendar } from '../hooks'
+import { calendarViews } from '../types'
+import { BookingsCalendar } from './BookingsCalendar'
+
+/**
+ * "Show bookings for" panel: approved bookings of the chosen room (or all rooms) with
+ * previous/next/today and day, week, month, list views.
+ */
+export function RoomBookingsPanel({ rooms, roomId, onRoomChange }) {
+  const [view, setView] = useState('list')
+  const [anchor, setAnchor] = useState(todayLocal)
+  const range = rangeFor(view, anchor)
+  const {
+    data: events = [],
+    isPending,
+    isError,
+    error,
+    refetch,
+    isPlaceholderData,
+  } = useCalendar({
+    ...range,
+    roomId,
+  })
+  const toneOf = (id) => rooms.find((item) => item.id === id)?.tone
+
+  return (
+    <Card className="p-5">
+      <div className="mb-4 grid gap-1.5 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center sm:gap-4">
+        <Label htmlFor="bookings-room" className="font-bold">
+          Show bookings for
+        </Label>
+        <NativeSelect
+          id="bookings-room"
+          value={roomId}
+          onChange={(event) => onRoomChange(event.target.value)}
+        >
+          <option value="">All rooms</option>
+          {rooms.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.name} ({item.location})
+            </option>
+          ))}
+        </NativeSelect>
+      </div>
+
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex gap-1.5">
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            aria-label="Previous"
+            onClick={() => setAnchor(shift(view, anchor, -1))}
+          >
+            <ChevronLeft aria-hidden="true" />
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            aria-label="Next"
+            onClick={() => setAnchor(shift(view, anchor, 1))}
+          >
+            <ChevronRight aria-hidden="true" />
+          </Button>
+          <Button type="button" variant="secondary" onClick={() => setAnchor(todayLocal())}>
+            Today
+          </Button>
+        </div>
+        <h2 aria-live="polite" className="text-lg font-bold tracking-tight">
+          {titleFor(view, anchor)}
+        </h2>
+        <div role="group" aria-label="Bookings view" className="flex gap-1">
+          {calendarViews.map(({ id, label }) => (
+            <button
+              key={id}
+              type="button"
+              aria-pressed={view === id}
+              onClick={() => setView(id)}
+              className={cn(
+                'min-h-9 rounded-lg border px-3 text-sm transition-colors',
+                view === id
+                  ? 'border-primary bg-primary font-bold text-primary-foreground'
+                  : 'border-input bg-card hover:bg-secondary',
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {isPending && <Skeleton className="h-72 rounded-xl" />}
+      {isError && (
+        <div role="alert" className="py-8 text-center text-sm">
+          <p className="text-destructive">{getErrorMessage(error)}</p>
+          <Button type="button" variant="link" onClick={() => void refetch()}>
+            Try again
+          </Button>
+        </div>
+      )}
+      {!isPending && !isError && (
+        <div
+          aria-busy={isPlaceholderData}
+          className={cn('min-h-72', isPlaceholderData && 'opacity-60')}
+        >
+          <BookingsCalendar
+            view={view}
+            anchor={anchor}
+            events={events}
+            toneOf={toneOf}
+            onPickDay={(date) => {
+              setAnchor(date)
+              setView('day')
+            }}
+          />
+        </div>
+      )}
+    </Card>
+  )
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/components/RoomPicker.jsx
+import { Skeleton } from '@/components/ui/skeleton'
+import { cn } from '@/lib/utils'
+import { toneStyles } from '../roomTone'
+
+/** Colour-coded radio tiles, one colour per room (tone tokens in theme.css). */
+export function RoomPicker({ rooms, isPending, errorMessage, register }) {
+  return (
+    <fieldset aria-describedby={errorMessage ? 'roomId-error' : undefined}>
+      <legend className="sr-only">Room</legend>
+      {isPending && (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {[0, 1, 2, 3].map((i) => (
+            <Skeleton key={i} className="h-16 rounded-lg" />
+          ))}
+        </div>
+      )}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {rooms.map((item) => (
+          <label
+            key={item.id}
+            title={`Seats ${item.capacity} · ${item.facilities.join(', ')}`}
+            className={cn(
+              'group flex cursor-pointer items-center gap-3 rounded-lg px-4 py-3 text-white shadow-sm transition hover:brightness-110 has-[:checked]:ring-4 has-[:checked]:ring-ring/50 has-[:checked]:ring-offset-2 has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-ring',
+              toneStyles(item.tone).solid,
+            )}
+          >
+            <input type="radio" value={item.id} className="peer sr-only" {...register('roomId')} />
+            <span
+              aria-hidden="true"
+              className="grid size-4 shrink-0 place-items-center rounded-full bg-white"
+            >
+              <span className="size-2 rounded-full bg-current opacity-0 group-has-[:checked]:opacity-100" />
+            </span>
+            <span className="min-w-0">
+              <b className="block text-sm leading-tight font-semibold">
+                {item.name} ({item.location})
+              </b>
+              <span className="block text-xs text-white/85">Seats {item.capacity}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+      {errorMessage && (
+        <p id="roomId-error" className="mt-3 text-sm text-destructive">
+          {errorMessage}
+        </p>
+      )}
+    </fieldset>
+  )
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/format.js
+const pad = (value) => String(value).padStart(2, '0')
+
+export const weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+export const weekdayNames = [
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+  'Sunday',
+]
+
+/** Local calendar date as "YYYY-MM-DD" (not UTC). */
+export function toDateString(date) {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+export function todayLocal() {
+  return toDateString(new Date())
+}
+
+export function toLocalDate(dateString) {
+  return new Date(`${dateString}T00:00`)
+}
+
+export function addDays(dateString, days) {
+  const date = toLocalDate(dateString)
+  date.setDate(date.getDate() + days)
+  return toDateString(date)
+}
+
+export function shiftMonth(dateString, months) {
+  const date = toLocalDate(dateString)
+  date.setDate(1)
+  date.setMonth(date.getMonth() + months)
+  return toDateString(date)
+}
+
+export function startOfMonth(dateString) {
+  return `${dateString.slice(0, 7)}-01`
+}
+
+export function endOfMonth(dateString) {
+  const date = toLocalDate(dateString)
+  return toDateString(new Date(date.getFullYear(), date.getMonth() + 1, 0))
+}
+
+/** Monday = 0 ... Sunday = 6. */
+export function weekdayIndex(dateString) {
+  return (toLocalDate(dateString).getDay() + 6) % 7
+}
+
+export function startOfWeek(dateString) {
+  return addDays(dateString, -weekdayIndex(dateString))
+}
+
+/** Number of days from start to end, both included. */
+export function daysBetween(start, end) {
+  return Math.round((toLocalDate(end) - toLocalDate(start)) / 86_400_000) + 1
+}
+
+export function eachDay(start, end) {
+  return Array.from({ length: daysBetween(start, end) }, (_, index) => addDays(start, index))
+}
+
+/** The full Monday-to-Sunday grid that covers a month. */
+export function monthGridRange(dateString) {
+  return {
+    from: startOfWeek(startOfMonth(dateString)),
+    to: addDays(startOfWeek(endOfMonth(dateString)), 6),
+  }
+}
+
+export function dateParts(dateString) {
+  const date = toLocalDate(dateString)
+  return { day: date.getDate(), month: date.toLocaleString('en-GB', { month: 'short' }) }
+}
+
+/** "14:30" -> "2:30 PM". */
+export function formatTime(value) {
+  const [hours, minutes] = value.split(':').map(Number)
+  return `${hours % 12 || 12}:${pad(minutes)} ${hours < 12 ? 'AM' : 'PM'}`
+}
+
+export function formatTimeRange(start, end) {
+  return `${formatTime(start)} - ${formatTime(end)}`
+}
+
+export function toMinutes(value) {
+  const [hours, minutes] = value.split(':').map(Number)
+  return hours * 60 + minutes
+}
+
+export const formatHourShort = (hour) => `${hour % 12 || 12}${hour < 12 ? 'a' : 'p'}`
+
+export const formatHourLong = (hour) => `${hour % 12 || 12} ${hour < 12 ? 'am' : 'pm'}`
+
+export function formatDateLong(dateString) {
+  return toLocalDate(dateString).toLocaleDateString('en-GB', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  })
+}
+
+export function formatDayMonth(dateString) {
+  return toLocalDate(dateString).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+}
+
+export function formatMonthYear(dateString) {
+  return toLocalDate(dateString).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
+}
+
+/** "Mon 23" - short column header for the week view. */
+export function formatWeekdayDay(dateString) {
+  return `${weekdayLabels[weekdayIndex(dateString)]} ${Number(dateString.slice(8))}`
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/hooks.js
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { meetingRoomApi } from './api/meetingRoomApi'
+
+export const meetingRoomKeys = {
+  all: ['meeting-rooms'],
+  rooms: () => [...meetingRoomKeys.all, 'rooms'],
+  list: (params) => [...meetingRoomKeys.all, 'list', params],
+  detail: (id) => [...meetingRoomKeys.all, 'detail', id],
+  calendar: (params) => [...meetingRoomKeys.all, 'calendar', params],
+  insights: (params) => [...meetingRoomKeys.all, 'insights', params],
+  availability: (params) => [...meetingRoomKeys.all, 'availability', params],
+}
+
+export function useMeetingRooms() {
+  return useQuery({
+    queryKey: meetingRoomKeys.rooms(),
+    queryFn: meetingRoomApi.rooms,
+    staleTime: 5 * 60_000,
+  })
+}
+
+export function useMyBookings(params) {
+  return useQuery({
+    queryKey: meetingRoomKeys.list(params),
+    queryFn: () => meetingRoomApi.list(params),
+    placeholderData: keepPreviousData,
+  })
+}
+
+export function useBooking(id) {
+  return useQuery({
+    queryKey: meetingRoomKeys.detail(id ?? ''),
+    queryFn: () => meetingRoomApi.get(id ?? ''),
+    enabled: Boolean(id),
+  })
+}
+
+export function useCalendar(params, enabled = true) {
+  return useQuery({
+    queryKey: meetingRoomKeys.calendar(params),
+    queryFn: () => meetingRoomApi.calendar(params),
+    enabled,
+    placeholderData: keepPreviousData,
+  })
+}
+
+export function useInsights(params) {
+  return useQuery({
+    queryKey: meetingRoomKeys.insights(params),
+    queryFn: () => meetingRoomApi.insights(params),
+    placeholderData: keepPreviousData,
+  })
+}
+
+export function useAvailability(params, enabled) {
+  return useQuery({
+    queryKey: meetingRoomKeys.availability(params),
+    queryFn: () => meetingRoomApi.availability(params),
+    enabled,
+    staleTime: 10_000,
+    retry: false,
+  })
+}
+
+function useInvalidateAll() {
+  const queryClient = useQueryClient()
+  return () => queryClient.invalidateQueries({ queryKey: meetingRoomKeys.all })
+}
+
+export function useCreateBooking() {
+  const invalidate = useInvalidateAll()
+  return useMutation({
+    mutationFn: (input) => meetingRoomApi.create(input),
+    onSuccess: invalidate,
+  })
+}
+
+export function useUpdateBooking(id) {
+  const invalidate = useInvalidateAll()
+  return useMutation({
+    mutationFn: (input) => meetingRoomApi.update(id, input),
+    onSuccess: invalidate,
+  })
+}
+
+export function useCancelBooking() {
+  const invalidate = useInvalidateAll()
+  return useMutation({
+    mutationFn: (id) => meetingRoomApi.cancel(id),
+    onSuccess: invalidate,
+  })
+}
+
+export function useAddComment(id) {
+  const invalidate = useInvalidateAll()
+  return useMutation({
+    mutationFn: (message) => meetingRoomApi.addComment(id, message),
+    onSuccess: invalidate,
+  })
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/pages/BookingDetailsPage.jsx
+import { CalendarX, DoorOpen, Pencil, SendHorizontal, X } from 'lucide-react'
+import { useState } from 'react'
+import { Link, useLocation, useParams } from 'react-router-dom'
+import { PageBreadcrumbs } from '@/components/layout/PageBreadcrumbs'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { Textarea } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Skeleton } from '@/components/ui/skeleton'
+import { usePageMeta } from '@/hooks/usePageMeta'
+import { getErrorMessage, toApiError } from '@/lib/api-error'
+import { formatDateTime } from '@/lib/date'
+import { BookingStatusBadge } from '../components/BookingStatusBadge'
+import { BookingTimeline } from '../components/BookingTimeline'
+import { CancelBookingDialog } from '../components/CancelBookingDialog'
+import { MeetingRoomHeader } from '../components/MeetingRoomHeader'
+import { formatDateLong, formatTimeRange } from '../format'
+import { useAddComment, useBooking } from '../hooks'
+import { canCancelBooking, canCommentOnBooking, canEditBooking } from '../status'
+import { MEETING_ROOMS_PATH } from '../types'
+
+const NOTE_MAX_LENGTH = 500
+
+function StatusNote({ booking }) {
+  if (booking.status === 'Pending') {
+    return (
+      <p className="rounded-xl bg-warning-soft px-4 py-3 text-sm text-warning">
+        Waiting for the Meeting Room Manager to review. You will get an email when a decision is
+        made.
+      </p>
+    )
+  }
+  if (booking.status === 'Accepted') {
+    return (
+      <p className="rounded-xl bg-success-soft px-4 py-3 text-sm text-success">
+        Your booking is confirmed. The house keeping team has been informed.
+      </p>
+    )
+  }
+  if (booking.status === 'Rejected') {
+    return (
+      <div className="rounded-xl bg-danger-soft px-4 py-3 text-sm text-danger">
+        <p className="font-semibold">Reason from the Meeting Room Manager</p>
+        <p className="mt-1 break-words">{booking.managerRemarks || 'No reason was given.'}</p>
+      </div>
+    )
+  }
+  return (
+    <p className="rounded-xl bg-muted px-4 py-3 text-sm text-muted-foreground">
+      This booking was cancelled.
+    </p>
+  )
+}
+
+function NoteForm({ id }) {
+  const addComment = useAddComment(id)
+  const [text, setText] = useState('')
+  const [error, setError] = useState('')
+  function submit(event) {
+    event.preventDefault()
+    if (!text.trim()) {
+      setError('Write a note first.')
+      return
+    }
+    setError('')
+    addComment.mutate(text.trim(), { onSuccess: () => setText('') })
+  }
+  return (
+    <form onSubmit={submit} noValidate className="mt-6 grid gap-2 border-t border-border pt-5">
+      <Label htmlFor="booking-note">Add a note for the Meeting Room Manager</Label>
+      <Textarea
+        id="booking-note"
+        value={text}
+        maxLength={NOTE_MAX_LENGTH}
+        onChange={(event) => setText(event.target.value)}
+        placeholder="e.g. We now need a second screen."
+        className="min-h-20"
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? 'booking-note-error' : undefined}
+      />
+      {error && (
+        <p id="booking-note-error" className="text-sm text-destructive">
+          {error}
+        </p>
+      )}
+      {addComment.isError && (
+        <p role="alert" className="text-sm text-destructive">
+          {getErrorMessage(addComment.error)}
+        </p>
+      )}
+      <div className="flex justify-end">
+        <Button type="submit" disabled={addComment.isPending}>
+          {addComment.isPending ? 'Sending...' : 'Add note'}
+          {!addComment.isPending && <SendHorizontal aria-hidden="true" />}
+        </Button>
+      </div>
+    </form>
+  )
+}
+
+export default function BookingDetailsPage() {
+  const { id } = useParams()
+  const location = useLocation()
+  const { data: booking, isPending, isError, error } = useBooking(id)
+  const [notice, setNotice] = useState(location.state?.notice ?? null)
+  const [cancelTarget, setCancelTarget] = useState(null)
+  usePageMeta('Booking details', 'See the status and history of your meeting room booking.')
+
+  let body
+  if (isPending) {
+    body = (
+      <div role="status" className="grid gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
+        <span className="sr-only">Loading booking</span>
+        <Skeleton className="h-96 rounded-2xl" />
+        <Skeleton className="h-96 rounded-2xl" />
+      </div>
+    )
+  } else if (isError) {
+    body = (
+      <div role="alert" className="rounded-2xl border border-border bg-card p-8 text-center">
+        <p className="font-semibold">
+          {toApiError(error).status === 404
+            ? 'This booking could not be found.'
+            : getErrorMessage(error)}
+        </p>
+        <Button asChild className="mt-5">
+          <Link to={`${MEETING_ROOMS_PATH}/my-bookings`}>Back to My Bookings</Link>
+        </Button>
+      </div>
+    )
+  } else {
+    const rows = [
+      ['Room', booking.roomName],
+      ['Date', formatDateLong(booking.date)],
+      ['Time', formatTimeRange(booking.startTime, booking.endTime)],
+      ['Persons', booking.persons],
+      ['Additional request', booking.additionalRequest || '-'],
+      ['Requested on', formatDateTime(booking.createdOn)],
+      ['Reference', booking.id],
+    ]
+    body = (
+      <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
+        <Card className="p-5 sm:p-6">
+          <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+            <h2 className="min-w-0 text-xl font-bold tracking-tight break-words">
+              {booking.title}
+            </h2>
+            <BookingStatusBadge status={booking.status} />
+          </div>
+          <StatusNote booking={booking} />
+          <dl className="mt-5 grid gap-3.5">
+            {rows.map(([key, value]) => (
+              <div key={key} className="grid grid-cols-[9rem_1fr] gap-2.5">
+                <dt className="text-muted-foreground">{key}</dt>
+                <dd className="font-semibold break-words">{value}</dd>
+              </div>
+            ))}
+          </dl>
+          {(canEditBooking(booking) || canCancelBooking(booking)) && (
+            <div className="mt-6 flex flex-wrap justify-end gap-3 border-t border-border pt-5">
+              {canEditBooking(booking) && (
+                <Button asChild variant="outline">
+                  <Link to={`${MEETING_ROOMS_PATH}/${encodeURIComponent(booking.id)}/edit`}>
+                    <Pencil aria-hidden="true" /> Edit
+                  </Link>
+                </Button>
+              )}
+              {canCancelBooking(booking) && (
+                <Button variant="outline" onClick={() => setCancelTarget(booking)}>
+                  <CalendarX aria-hidden="true" /> Cancel booking
+                </Button>
+              )}
+            </div>
+          )}
+        </Card>
+
+        <Card className="p-5 sm:p-6">
+          <h2 className="mb-5 text-xl font-bold tracking-tight">Timeline</h2>
+          <BookingTimeline entries={booking.timeline ?? []} />
+          {canCommentOnBooking(booking) && <NoteForm id={booking.id} />}
+        </Card>
+      </div>
+    )
+  }
+
+  return (
+    <div className="mx-auto max-w-[100rem]">
+      <PageBreadcrumbs
+        items={[
+          { label: 'Admin', to: '/admin' },
+          { label: 'Meeting Room Bookings', to: MEETING_ROOMS_PATH },
+          { label: 'My Bookings', to: `${MEETING_ROOMS_PATH}/my-bookings` },
+          { label: booking?.id ?? 'Booking' },
+        ]}
+      />
+      <MeetingRoomHeader
+        icon={<DoorOpen />}
+        title="Booking details"
+        description={booking ? `Reference ${booking.id}` : 'Status and history of your request.'}
+      />
+      {notice && (
+        <div
+          role="status"
+          className="mb-5 flex items-center justify-between gap-3 rounded-xl bg-success-soft px-4 py-3 text-success"
+        >
+          <p className="font-semibold">{notice}</p>
+          <button
+            type="button"
+            aria-label="Dismiss message"
+            onClick={() => setNotice(null)}
+            className="rounded p-1 hover:bg-card/50"
+          >
+            <X className="size-4" aria-hidden="true" />
+          </button>
+        </div>
+      )}
+      {body}
+      <CancelBookingDialog
+        booking={cancelTarget}
+        onClose={() => setCancelTarget(null)}
+        onCancelled={() => {
+          setCancelTarget(null)
+          setNotice('Booking cancelled.')
+        }}
+      />
+    </div>
+  )
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/pages/BookingFormPage.jsx
+import { DoorOpen } from 'lucide-react'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { PageBreadcrumbs } from '@/components/layout/PageBreadcrumbs'
+import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
+import { usePageMeta } from '@/hooks/usePageMeta'
+import { getErrorMessage, toApiError } from '@/lib/api-error'
+import { BookingForm } from '../components/BookingForm'
+import { MeetingRoomHeader } from '../components/MeetingRoomHeader'
+import { useBooking, useCreateBooking, useMeetingRooms, useUpdateBooking } from '../hooks'
+import { canEditBooking } from '../status'
+import { MEETING_ROOMS_PATH } from '../types'
+
+const blankForm = {
+  title: '',
+  persons: '',
+  additionalRequest: '',
+  startDate: '',
+  endDate: '',
+  startTime: '',
+  endTime: '',
+  roomId: '',
+}
+
+/** Handles both "Book a Meeting Room" (/create) and "Edit" (/:id/edit). */
+export default function BookingFormPage() {
+  const { id } = useParams()
+  const isEdit = Boolean(id)
+  const title = isEdit ? 'Edit Booking Request' : 'Book a Meeting Room'
+  usePageMeta(title, 'Send a meeting room request for approval by the Meeting Room Manager.')
+  const navigate = useNavigate()
+  const preselectedRoom = useLocation().state?.roomId ?? ''
+  const roomsQuery = useMeetingRooms()
+  const existing = useBooking(id)
+  const create = useCreateBooking()
+  const update = useUpdateBooking(id ?? '')
+  const mutation = isEdit ? update : create
+  const detailsPath = id ? `${MEETING_ROOMS_PATH}/${encodeURIComponent(id)}` : MEETING_ROOMS_PATH
+
+  function handleSubmit(values) {
+    if (isEdit) {
+      update.mutate(
+        {
+          roomId: values.roomId,
+          date: values.startDate,
+          startTime: values.startTime,
+          endTime: values.endTime,
+          title: values.title,
+          persons: values.persons,
+          additionalRequest: values.additionalRequest,
+        },
+        {
+          onSuccess: () =>
+            void navigate(detailsPath, { state: { notice: 'Booking request updated.' } }),
+        },
+      )
+      return
+    }
+    create.mutate(
+      {
+        title: values.title,
+        persons: values.persons,
+        additionalRequest: values.additionalRequest,
+        startDate: values.startDate,
+        endDate: values.endDate,
+        startTime: values.startTime,
+        endTime: values.endTime,
+        roomId: values.roomId,
+      },
+      {
+        onSuccess: (created) =>
+          void navigate(`${MEETING_ROOMS_PATH}/my-bookings`, {
+            state: {
+              notice:
+                created.length > 1
+                  ? `${created.length} booking requests submitted for approval.`
+                  : 'Booking request submitted for approval.',
+            },
+          }),
+      },
+    )
+  }
+
+  let body
+  if (isEdit && existing.isPending) {
+    body = (
+      <div className="space-y-4" role="status">
+        <span className="sr-only">Loading booking</span>
+        {[0, 1, 2].map((i) => (
+          <Skeleton key={i} className="h-40 rounded-2xl" />
+        ))}
+      </div>
+    )
+  } else if (isEdit && existing.isError) {
+    const status = toApiError(existing.error).status
+    body = (
+      <div role="alert" className="rounded-2xl border border-border bg-card p-8 text-center">
+        <p className="font-semibold">
+          {status === 404 ? 'This booking could not be found.' : getErrorMessage(existing.error)}
+        </p>
+        <Button asChild className="mt-5">
+          <Link to={`${MEETING_ROOMS_PATH}/my-bookings`}>Back to My Bookings</Link>
+        </Button>
+      </div>
+    )
+  } else if (isEdit && existing.data && !canEditBooking(existing.data)) {
+    body = (
+      <div role="alert" className="rounded-2xl border border-border bg-card p-8 text-center">
+        <p className="font-semibold">Only upcoming Pending requests can be edited.</p>
+        <Button asChild className="mt-5">
+          <Link to={detailsPath}>Back to booking</Link>
+        </Button>
+      </div>
+    )
+  } else {
+    const booking = existing.data
+    const defaults = booking
+      ? {
+          title: booking.title,
+          persons: String(booking.persons),
+          additionalRequest: booking.additionalRequest ?? '',
+          startDate: booking.date,
+          endDate: '',
+          startTime: booking.startTime,
+          endTime: booking.endTime,
+          roomId: booking.roomId,
+        }
+      : { ...blankForm, roomId: preselectedRoom }
+    body = (
+      <BookingForm
+        mode={isEdit ? 'edit' : 'create'}
+        rooms={roomsQuery.data ?? []}
+        roomsPending={roomsQuery.isPending}
+        defaultValues={defaults}
+        excludeId={id}
+        isSubmitting={mutation.isPending}
+        submitError={mutation.error}
+        onSubmit={handleSubmit}
+        onCancel={() => void navigate(isEdit ? detailsPath : MEETING_ROOMS_PATH)}
+      />
+    )
+  }
+
+  return (
+    <div className="mx-auto max-w-[100rem]">
+      <PageBreadcrumbs
+        items={[
+          { label: 'Admin', to: '/admin' },
+          { label: 'Meeting Room Bookings', to: MEETING_ROOMS_PATH },
+          { label: title },
+        ]}
+      />
+      <MeetingRoomHeader
+        icon={<DoorOpen />}
+        title={title}
+        description="Choose a room and a time. The Meeting Room Manager approves every request."
+      />
+      {body}
+    </div>
+  )
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/pages/CalendarPage.jsx
+import { ChevronLeft, ChevronRight, DoorOpen } from 'lucide-react'
+import { useState } from 'react'
+import { PageBreadcrumbs } from '@/components/layout/PageBreadcrumbs'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { NativeSelect } from '@/components/ui/input'
+import { Skeleton } from '@/components/ui/skeleton'
+import { usePageMeta } from '@/hooks/usePageMeta'
+import { getErrorMessage } from '@/lib/api-error'
+import { cn } from '@/lib/utils'
+import { BookingsCalendar } from '../components/BookingsCalendar'
+import { MeetingRoomHeader } from '../components/MeetingRoomHeader'
+import { todayLocal } from '../format'
+import { rangeFor, shift, titleFor } from '../calendarNav'
+import { useCalendar, useMeetingRooms } from '../hooks'
+import { toneStyles } from '../roomTone'
+import { calendarViews } from '../types'
+
+export default function CalendarPage() {
+  usePageMeta('Booking Calendar', 'See approved meeting room bookings by month, week, day or list.')
+  const [view, setView] = useState('month')
+  const [anchor, setAnchor] = useState(todayLocal)
+  const [roomId, setRoomId] = useState('')
+  const roomsQuery = useMeetingRooms()
+  const rooms = roomsQuery.data ?? []
+  const range = rangeFor(view, anchor)
+  const {
+    data: events = [],
+    isPending,
+    isError,
+    error,
+    refetch,
+    isPlaceholderData,
+  } = useCalendar({
+    ...range,
+    roomId,
+  })
+  const toneOf = (id) => rooms.find((item) => item.id === id)?.tone
+
+  function pickDay(date) {
+    setAnchor(date)
+    setView('day')
+  }
+
+  return (
+    <div className="mx-auto max-w-[100rem]">
+      <PageBreadcrumbs
+        items={[
+          { label: 'Admin', to: '/admin' },
+          { label: 'Meeting Room Bookings', to: '/admin/meeting-room-bookings' },
+          { label: 'Calendar' },
+        ]}
+      />
+      <MeetingRoomHeader
+        icon={<DoorOpen />}
+        title="Booking Calendar"
+        description="Approved bookings of every room, so you can pick a free slot."
+      />
+
+      <Card className="p-5">
+        <div className="mb-5 flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex gap-1.5">
+              <Button
+                variant="outline"
+                size="icon"
+                aria-label="Previous"
+                onClick={() => setAnchor(shift(view, anchor, -1))}
+              >
+                <ChevronLeft aria-hidden="true" />
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                aria-label="Next"
+                onClick={() => setAnchor(shift(view, anchor, 1))}
+              >
+                <ChevronRight aria-hidden="true" />
+              </Button>
+              <Button variant="secondary" onClick={() => setAnchor(todayLocal())}>
+                Today
+              </Button>
+            </div>
+            <h2 aria-live="polite" className="text-xl font-bold tracking-tight">
+              {titleFor(view, anchor)}
+            </h2>
+          </div>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <div role="group" aria-label="Calendar view" className="flex gap-1.5">
+              {calendarViews.map(({ id, label }) => (
+                <button
+                  key={id}
+                  type="button"
+                  aria-pressed={view === id}
+                  onClick={() => setView(id)}
+                  className={cn(
+                    'min-h-10 rounded-xl border px-4 text-sm whitespace-nowrap transition-colors',
+                    view === id
+                      ? 'border-primary bg-primary font-bold text-primary-foreground shadow-sm'
+                      : 'border-input bg-card hover:bg-secondary',
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <NativeSelect
+              aria-label="Filter by room"
+              value={roomId}
+              onChange={(event) => setRoomId(event.target.value)}
+              className="h-10 sm:w-56"
+            >
+              <option value="">All rooms</option>
+              {rooms.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name} ({item.location})
+                </option>
+              ))}
+            </NativeSelect>
+          </div>
+        </div>
+
+        {rooms.length > 0 && (
+          <ul
+            aria-label="Room colours"
+            className="mb-5 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-muted-foreground"
+          >
+            {rooms.map((item) => (
+              <li key={item.id} className="flex items-center gap-1.5">
+                <span
+                  aria-hidden="true"
+                  className={cn('size-2.5 rounded-full', toneStyles(item.tone).dot)}
+                />
+                {item.name} ({item.location})
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {isPending && <Skeleton className="h-96 rounded-xl" />}
+        {isError && (
+          <div role="alert" className="py-8 text-center text-sm">
+            <p className="text-destructive">{getErrorMessage(error)}</p>
+            <Button variant="link" onClick={() => void refetch()}>
+              Try again
+            </Button>
+          </div>
+        )}
+        {!isPending && !isError && (
+          <div aria-busy={isPlaceholderData} className={cn(isPlaceholderData && 'opacity-60')}>
+            <BookingsCalendar
+              view={view}
+              anchor={anchor}
+              events={events}
+              toneOf={toneOf}
+              onPickDay={pickDay}
+            />
+          </div>
+        )}
+      </Card>
+    </div>
+  )
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/pages/MeetingRoomDashboardPage.jsx
+import {
+  ArrowRight,
+  Bell,
+  Building2,
+  CalendarX,
+  ChevronRight,
+  CircleCheck,
+  CircleX,
+  Clock,
+  DoorOpen,
+  Lightbulb,
+  Users,
+} from 'lucide-react'
+import { useState } from 'react'
+import { Link } from 'react-router-dom'
+import { MeetingRoomHeader } from '../components/MeetingRoomHeader'
+import { PageBreadcrumbs } from '@/components/layout/PageBreadcrumbs'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Skeleton } from '@/components/ui/skeleton'
+import { usePageMeta } from '@/hooks/usePageMeta'
+import { getErrorMessage } from '@/lib/api-error'
+import { cn } from '@/lib/utils'
+import { ColumnChart, StatusSummary } from '../components/InsightCharts'
+import {
+  daysBetween,
+  endOfMonth,
+  formatHourLong,
+  formatHourShort,
+  formatTimeRange,
+  dateParts,
+  startOfMonth,
+  todayLocal,
+  weekdayLabels,
+  weekdayNames,
+} from '../format'
+import { useInsights, useMyBookings } from '../hooks'
+import { MEETING_ROOMS_PATH } from '../types'
+
+const HOURS = Array.from({ length: 11 }, (_, index) => index + 8)
+
+const statCards = [
+  {
+    status: 'Pending',
+    label: 'Pending approval',
+    hint: 'Waiting for a decision',
+    icon: Clock,
+    tone: 'bg-warning-soft text-warning',
+    highlight: true,
+  },
+  {
+    status: 'Accepted',
+    label: 'Accepted',
+    hint: 'Confirmed for you',
+    icon: CircleCheck,
+    tone: 'bg-success-soft text-success',
+  },
+  {
+    status: 'Rejected',
+    label: 'Rejected',
+    hint: 'Try a different slot',
+    icon: CircleX,
+    tone: 'bg-danger-soft text-danger',
+  },
+  {
+    status: 'Cancelled',
+    label: 'Cancelled',
+    hint: 'None in this period',
+    icon: CalendarX,
+    tone: 'bg-muted text-muted-foreground',
+  },
+]
+
+const joinWords = (items) =>
+  items.length <= 2 ? items.join(' and ') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`
+
+/** "Busiest at 9 AM and 3 PM. Rooms are easiest to get after 5 PM." */
+function timingInsight(hourData) {
+  const max = Math.max(0, ...hourData.map((item) => item.value))
+  if (max === 0) return null
+  const busiest = hourData
+    .filter((item) => item.value === max)
+    .map((item) => item.title.toUpperCase())
+  const min = Math.min(...hourData.map((item) => item.value))
+  const quietest = hourData.filter((item) => item.value === min)
+  const trailing = quietest.at(-1) === hourData.at(-1)
+  const easy = trailing
+    ? `after ${(hourData[hourData.indexOf(quietest[0]) - 1] ?? quietest[0]).title.toUpperCase()}`
+    : `around ${quietest[0].title.toUpperCase()}`
+  return { busiest: joinWords(busiest), easy }
+}
+
+/** "Saturday is the busiest day. Wed to Fri have no bookings." */
+function weekdayInsight(dayData) {
+  const max = Math.max(0, ...dayData.map((item) => item.value))
+  if (max === 0) return null
+  const busiest = dayData
+    .map((item, index) => (item.value === max ? weekdayNames[index] : null))
+    .filter(Boolean)
+  const quiet = []
+  let run = []
+  for (const [index, item] of dayData.entries()) {
+    if (item.value === 0) run.push(index)
+    else if (run.length) {
+      quiet.push(run)
+      run = []
+    }
+  }
+  if (run.length) quiet.push(run)
+  const phrases = quiet.map((days) =>
+    days.length === 1
+      ? weekdayLabels[days[0]]
+      : `${weekdayLabels[days[0]]} to ${weekdayLabels[days.at(-1)]}`,
+  )
+  const quietDays = quiet.reduce((sum, days) => sum + days.length, 0)
+  return {
+    busiest: joinWords(busiest),
+    plural: busiest.length > 1,
+    quiet: phrases.length
+      ? `${joinWords(phrases)} ${quietDays === 1 ? 'has' : 'have'} no bookings.`
+      : '',
+  }
+}
+
+function InsightCard({ title, insight, className, children }) {
+  return (
+    <Card className={cn('p-5 sm:p-6', className)}>
+      <h3 className="text-lg font-bold tracking-tight">{title}</h3>
+      {insight && (
+        <p className="mt-1 mb-5 flex items-start gap-2 text-sm text-muted-foreground">
+          <Lightbulb className="mt-0.5 size-4 shrink-0 text-tone-amber-border" aria-hidden="true" />
+          <span>{insight}</span>
+        </p>
+      )}
+      {children}
+    </Card>
+  )
+}
+
+function dayLabel(date) {
+  const diff = daysBetween(todayLocal(), date)
+  if (diff === 0) return 'Today'
+  if (diff === 1) return 'Tomorrow'
+  return `In ${diff} days`
+}
+
+function nowHHmm() {
+  const now = new Date()
+  return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+}
+
+function NextMeeting({ query }) {
+  const today = todayLocal()
+  const now = nowHHmm()
+  const next = (query.data?.items ?? []).find(
+    (item) => item.date > today || (item.date === today && item.endTime > now),
+  )
+  let body
+  if (query.isPending) {
+    body = <Skeleton className="h-48 bg-white/10" />
+  } else if (query.isError) {
+    body = (
+      <div role="alert" className="my-auto text-sm">
+        <p>{getErrorMessage(query.error)}</p>
+        <Button
+          variant="outline"
+          className="mt-3 bg-transparent"
+          onClick={() => void query.refetch()}
+        >
+          Try again
+        </Button>
+      </div>
+    )
+  } else if (!next) {
+    body = (
+      <div className="my-auto py-6">
+        <h3 className="text-2xl font-bold tracking-tight">No upcoming meetings</h3>
+        <p className="mt-2 text-sidebar-foreground/80">
+          Accepted bookings show up here. Find a free room and send a request.
+        </p>
+        <Button asChild variant="secondary" className="mt-6">
+          <Link to={`${MEETING_ROOMS_PATH}/create`}>
+            Book a room <ArrowRight aria-hidden="true" />
+          </Link>
+        </Button>
+      </div>
+    )
+  } else {
+    const { day, month } = dateParts(next.date)
+    const path = `${MEETING_ROOMS_PATH}/${encodeURIComponent(next.id)}`
+    body = (
+      <>
+        <div className="flex items-start gap-4">
+          <div
+            aria-hidden="true"
+            className="grid size-16 shrink-0 place-content-center rounded-2xl bg-white text-center text-sidebar"
+          >
+            <span className="text-3xl leading-none font-extrabold">{day}</span>
+            <span className="mt-1 text-xs font-semibold uppercase">{month}</span>
+          </div>
+          <div className="min-w-0">
+            <h3 className="text-2xl font-bold tracking-tight sm:text-3xl">{next.title}</h3>
+            <ul className="mt-3 flex flex-wrap gap-2 text-sm">
+              <li className="flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1.5">
+                <Clock className="size-4" aria-hidden="true" />
+                {formatTimeRange(next.startTime, next.endTime)}
+              </li>
+              <li className="flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1.5">
+                <Building2 className="size-4" aria-hidden="true" />
+                {next.roomName}
+              </li>
+              <li className="flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1.5">
+                <Users className="size-4" aria-hidden="true" />
+                {next.persons} persons
+              </li>
+            </ul>
+          </div>
+        </div>
+        <div className="mt-auto flex flex-wrap items-center justify-between gap-3 pt-10">
+          <span className="inline-flex items-center gap-2 rounded-full bg-success-soft px-3.5 py-1.5 text-sm font-semibold text-success">
+            <CircleCheck className="size-4" aria-hidden="true" /> Accepted - you&apos;re all set
+          </span>
+          <div className="flex flex-wrap gap-3">
+            <Button asChild variant="secondary">
+              <Link to={path}>View details</Link>
+            </Button>
+            <Button
+              asChild
+              variant="outline"
+              className="border-white/40 bg-transparent text-sidebar-foreground hover:bg-white/10 hover:text-sidebar-foreground"
+            >
+              <Link to={`${MEETING_ROOMS_PATH}/my-bookings`} state={{ status: 'Accepted' }}>
+                All meetings <ArrowRight aria-hidden="true" />
+              </Link>
+            </Button>
+          </div>
+        </div>
+      </>
+    )
+    return (
+      <section
+        aria-labelledby="next-meeting-heading"
+        className="flex flex-col rounded-3xl bg-sidebar p-6 text-sidebar-foreground shadow-sm sm:p-7"
+      >
+        <p
+          id="next-meeting-heading"
+          className="mb-5 flex items-center gap-3 text-xs font-bold tracking-widest uppercase"
+        >
+          Your next meeting
+          <span className="rounded-full bg-white px-2.5 py-0.5 text-xs font-semibold tracking-normal text-sidebar normal-case">
+            {dayLabel(next.date)}
+          </span>
+        </p>
+        {body}
+      </section>
+    )
+  }
+  return (
+    <section
+      aria-labelledby="next-meeting-heading"
+      className="flex flex-col rounded-3xl bg-sidebar p-6 text-sidebar-foreground shadow-sm sm:p-7"
+    >
+      <p id="next-meeting-heading" className="mb-5 text-xs font-bold tracking-widest uppercase">
+        Your next meeting
+      </p>
+      {body}
+    </section>
+  )
+}
+
+function Attention({ pending, rejected }) {
+  const loading = pending.isPending || rejected.isPending
+  const pendingCount = pending.data?.total ?? 0
+  const rejectedCount = rejected.data?.total ?? 0
+  const plural = (n, one, many) => (n === 1 ? one : many)
+  return (
+    <section
+      aria-labelledby="attention-heading"
+      className="rounded-3xl border border-tone-amber-border/50 bg-tone-amber-bg p-6 shadow-sm sm:p-7"
+    >
+      <h3
+        id="attention-heading"
+        className="mb-5 flex items-center gap-3 border-b border-tone-amber-border/40 pb-5 text-xl font-bold tracking-tight"
+      >
+        <span className="grid size-10 place-items-center rounded-full bg-tone-amber-border/30 text-warning">
+          <Bell className="size-5" aria-hidden="true" />
+        </span>
+        Needs your attention
+      </h3>
+      {loading && <Skeleton className="h-32" />}
+      {!loading && pendingCount === 0 && rejectedCount === 0 && (
+        <p className="flex items-center gap-2 text-sm text-success">
+          <CircleCheck className="size-4" aria-hidden="true" /> You&apos;re all caught up. Nothing
+          is waiting on you.
+        </p>
+      )}
+      {pendingCount > 0 && (
+        <div className="grid gap-2">
+          <h4 className="flex items-center gap-2 font-semibold text-warning">
+            <Clock className="size-4" aria-hidden="true" />
+            {pendingCount} {plural(pendingCount, 'request is', 'requests are')} waiting for approval
+          </h4>
+          <p className="text-sm text-foreground/80">
+            The approver hasn&apos;t responded yet. Check My bookings for updates.
+          </p>
+          <Button asChild className="mt-2 w-fit bg-warning text-white hover:bg-warning/90">
+            <Link to={`${MEETING_ROOMS_PATH}/my-bookings`} state={{ status: 'Pending' }}>
+              Track request
+            </Link>
+          </Button>
+        </div>
+      )}
+      {pendingCount > 0 && rejectedCount > 0 && (
+        <div className="my-5 border-t border-tone-amber-border/40" />
+      )}
+      {rejectedCount > 0 && (
+        <div className="grid gap-2">
+          <h4 className="flex items-center gap-2 font-semibold text-danger">
+            <CircleX className="size-4" aria-hidden="true" />
+            {rejectedCount} {plural(rejectedCount, 'request was', 'requests were')} rejected
+          </h4>
+          <p className="text-sm text-foreground/80">Try another room or time and send it again.</p>
+          <Link
+            to={`${MEETING_ROOMS_PATH}/create`}
+            className="mt-1 inline-flex w-fit items-center gap-2 text-sm font-semibold text-primary underline underline-offset-4"
+          >
+            Book another slot <ArrowRight className="size-4" aria-hidden="true" />
+          </Link>
+        </div>
+      )}
+    </section>
+  )
+}
+
+export default function MeetingRoomDashboardPage() {
+  usePageMeta('Meeting Room Bookings', 'Book meeting rooms and keep track of your requests.')
+  const [range, setRange] = useState(() => {
+    const today = todayLocal()
+    return { from: startOfMonth(today), to: endOfMonth(today) }
+  })
+  const [rangeError, setRangeError] = useState(false)
+  const insights = useInsights(range)
+  const today = todayLocal()
+  const upcoming = useMyBookings({
+    status: 'Accepted',
+    from: today,
+    sort: 'dateAsc',
+    page: 1,
+    pageSize: 5,
+  })
+  const pending = useMyBookings({ status: 'Pending', from: today, page: 1, pageSize: 1 })
+  const rejected = useMyBookings({ status: 'Rejected', from: today, page: 1, pageSize: 1 })
+
+  function changeRange(key, value) {
+    if (!value) return
+    const next = { ...range, [key]: value }
+    if (next.from > next.to) {
+      setRangeError(true)
+      return
+    }
+    setRangeError(false)
+    setRange(next)
+  }
+
+  const data = insights.data
+  const hourCounts = new Map((data?.byHour ?? []).map((item) => [item.hour, item.count]))
+  const dayCounts = new Map((data?.byWeekday ?? []).map((item) => [item.day, item.count]))
+  const hourData = HOURS.map((hour) => ({
+    label: formatHourShort(hour),
+    title: formatHourLong(hour),
+    value: hourCounts.get(hour) ?? 0,
+  }))
+  const dayData = weekdayLabels.map((label, index) => ({ label, value: dayCounts.get(index) ?? 0 }))
+  const rooms = data?.byRoom ?? []
+  const maxRoom = Math.max(1, ...rooms.map((item) => item.count))
+  const counts = data?.byStatus ?? { Pending: 0, Accepted: 0, Rejected: 0, Cancelled: 0 }
+  const timing = timingInsight(hourData)
+  const weekdays = weekdayInsight(dayData)
+
+  return (
+    <div className="mx-auto max-w-[100rem]">
+      <PageBreadcrumbs
+        items={[{ label: 'Admin', to: '/admin' }, { label: 'Meeting Room Bookings' }]}
+      />
+      <MeetingRoomHeader
+        icon={<DoorOpen />}
+        title="Meeting Room Bookings"
+        description="Find a room, send a request and follow it until it is approved."
+      />
+
+      <div className="mb-8 grid gap-5 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+        <NextMeeting query={upcoming} />
+        <Attention pending={pending} rejected={rejected} />
+      </div>
+
+      <section aria-labelledby="overview-heading">
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 id="overview-heading" className="text-2xl font-bold tracking-tight">
+              Overview
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Your booking requests in the selected dates
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-border bg-card p-2 pl-4 shadow-sm">
+            <label
+              htmlFor="range-from"
+              className="text-xs font-bold text-muted-foreground uppercase"
+            >
+              From
+            </label>
+            <Input
+              id="range-from"
+              type="date"
+              value={range.from}
+              onChange={(event) => changeRange('from', event.target.value)}
+              className="h-10 w-auto"
+            />
+            <label htmlFor="range-to" className="text-xs font-bold text-muted-foreground uppercase">
+              To
+            </label>
+            <Input
+              id="range-to"
+              type="date"
+              value={range.to}
+              onChange={(event) => changeRange('to', event.target.value)}
+              className="h-10 w-auto"
+            />
+          </div>
+        </div>
+        {rangeError && (
+          <p role="alert" className="mb-4 px-1 text-sm text-destructive">
+            &quot;From&quot; must be on or before &quot;To&quot;.
+          </p>
+        )}
+
+        <div className="mb-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {statCards.map(({ status, label, hint, icon: Icon, tone, highlight }) => {
+            const count = counts[status] ?? 0
+            return (
+              <Link
+                key={status}
+                to={`${MEETING_ROOMS_PATH}/my-bookings`}
+                state={{ status }}
+                className={cn(
+                  'flex items-center gap-4 rounded-2xl border p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md',
+                  highlight && count > 0
+                    ? 'border-tone-amber-border bg-tone-amber-bg'
+                    : 'border-border bg-card',
+                )}
+              >
+                <span className={cn('grid size-14 shrink-0 place-items-center rounded-2xl', tone)}>
+                  <Icon className="size-6" aria-hidden="true" />
+                </span>
+                <span>
+                  <b className="block text-4xl leading-none font-extrabold">
+                    {insights.isPending ? '-' : count}
+                  </b>
+                  <b className="mt-1.5 block text-sm font-semibold">{label}</b>
+                  <span className="block text-xs text-muted-foreground">
+                    {status === 'Cancelled' && count > 0 ? 'Cancelled by you' : hint}
+                  </span>
+                </span>
+              </Link>
+            )
+          })}
+        </div>
+
+        <Card className="mb-5 p-5">
+          {insights.isPending ? <Skeleton className="h-10" /> : <StatusSummary counts={counts} />}
+        </Card>
+
+        {insights.isError ? (
+          <div
+            role="alert"
+            className="rounded-2xl border border-border bg-card p-6 text-center text-sm"
+          >
+            <p className="text-destructive">{getErrorMessage(insights.error)}</p>
+            <Button variant="link" onClick={() => void insights.refetch()}>
+              Try again
+            </Button>
+          </div>
+        ) : (
+          <div className="grid gap-5">
+            <div className="grid gap-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
+              <InsightCard
+                title="Popular timing"
+                insight={
+                  timing && (
+                    <>
+                      Busiest at <b className="text-foreground">{timing.busiest}</b>. Rooms are
+                      easiest to get {timing.easy}.
+                    </>
+                  )
+                }
+              >
+                {insights.isPending ? (
+                  <Skeleton className="h-56" />
+                ) : (
+                  <ColumnChart data={hourData} label="Popular timing by hour" />
+                )}
+              </InsightCard>
+              <InsightCard
+                title="Busiest days"
+                insight={
+                  weekdays && (
+                    <>
+                      <b className="text-foreground">{weekdays.busiest}</b>{' '}
+                      {weekdays.plural ? 'are the busiest days' : 'is the busiest day'}.{' '}
+                      {weekdays.quiet}
+                    </>
+                  )
+                }
+              >
+                {insights.isPending ? (
+                  <Skeleton className="h-56" />
+                ) : (
+                  <ColumnChart data={dayData} label="Meetings by day of the week" />
+                )}
+              </InsightCard>
+            </div>
+
+            <InsightCard title="Bookings by room">
+              <p className="mt-1 mb-5 text-sm text-muted-foreground">
+                Most booked first. Pick any room to start a request.
+              </p>
+              {insights.isPending ? (
+                <Skeleton className="h-48" />
+              ) : rooms.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No bookings in this period.</p>
+              ) : (
+                <ol className="grid gap-x-10 gap-y-5 md:grid-flow-col md:grid-cols-2 md:grid-rows-4">
+                  {rooms.slice(0, 8).map((room, index) => (
+                    <li key={room.roomId}>
+                      <Link
+                        to={`${MEETING_ROOMS_PATH}/create`}
+                        state={{ roomId: room.roomId }}
+                        className="group flex items-center gap-4 rounded-xl"
+                      >
+                        <span
+                          aria-hidden="true"
+                          className="grid size-8 shrink-0 place-items-center rounded-full bg-muted text-sm font-semibold"
+                        >
+                          {index + 1}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="mb-1.5 flex items-center justify-between gap-3 text-sm">
+                            <span className="flex min-w-0 items-center gap-2">
+                              <b className="truncate font-semibold group-hover:underline">
+                                {room.roomName}
+                              </b>
+                              {room.location && (
+                                <span className="shrink-0 rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                                  {room.location}
+                                </span>
+                              )}
+                            </span>
+                            <span className="shrink-0 text-xs font-semibold">
+                              {room.count} {room.count === 1 ? 'booking' : 'bookings'}
+                            </span>
+                          </span>
+                          <span className="block h-2 overflow-hidden rounded-full bg-muted">
+                            <span
+                              className={cn(
+                                'block h-full rounded-full',
+                                index === 0 ? 'bg-sidebar' : 'bg-primary/65',
+                              )}
+                              style={{ width: `${(room.count / maxRoom) * 100}%` }}
+                            />
+                          </span>
+                        </span>
+                        <ChevronRight
+                          className="size-4 shrink-0 text-muted-foreground"
+                          aria-hidden="true"
+                        />
+                        <span className="sr-only">Start a request for {room.roomName}</span>
+                      </Link>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </InsightCard>
+          </div>
+        )}
+      </section>
+    </div>
+  )
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/pages/MyBookingsPage.jsx
+import { ClipboardList, Plus, Search, X } from 'lucide-react'
+import { useState } from 'react'
+import { Link, useLocation } from 'react-router-dom'
+import { EmptyState } from '@/components/common/EmptyState'
+import { PageBreadcrumbs } from '@/components/layout/PageBreadcrumbs'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Skeleton } from '@/components/ui/skeleton'
+import { useDebouncedValue } from '@/hooks/useDebouncedValue'
+import { usePageMeta } from '@/hooks/usePageMeta'
+import { getErrorMessage } from '@/lib/api-error'
+import { cn } from '@/lib/utils'
+import { BookingCard } from '../components/BookingCard'
+import { CancelBookingDialog } from '../components/CancelBookingDialog'
+import { MeetingRoomHeader } from '../components/MeetingRoomHeader'
+import { useMyBookings } from '../hooks'
+import { bookingStatuses, MEETING_ROOMS_PATH } from '../types'
+
+const PAGE_STEP = 8
+const statusFilters = ['', ...bookingStatuses]
+
+export default function MyBookingsPage() {
+  usePageMeta('My Bookings', 'Track, edit and cancel your meeting room booking requests.')
+  const location = useLocation()
+  const [notice, setNotice] = useState(location.state?.notice ?? null)
+  const [status, setStatus] = useState(location.state?.status ?? '')
+  const [search, setSearch] = useState('')
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
+  const [pageSize, setPageSize] = useState(PAGE_STEP)
+  const [cancelTarget, setCancelTarget] = useState(null)
+  const debouncedSearch = useDebouncedValue(search)
+  const invalidRange = Boolean(from && to && from > to)
+  const { data, isPending, isError, error, refetch, isPlaceholderData } = useMyBookings({
+    status,
+    search: debouncedSearch,
+    from,
+    to,
+    sort: 'dateDesc',
+    page: 1,
+    pageSize,
+  })
+  const items = data?.items ?? []
+  const total = data?.total ?? 0
+
+  return (
+    <div className="mx-auto max-w-[100rem]">
+      <PageBreadcrumbs
+        items={[
+          { label: 'Admin', to: '/admin' },
+          { label: 'Meeting Room Bookings', to: MEETING_ROOMS_PATH },
+          { label: 'My Bookings' },
+        ]}
+      />
+      <MeetingRoomHeader
+        icon={<ClipboardList />}
+        title="My Bookings"
+        description="Every request you have sent, and what happened to it."
+      />
+
+      {notice && (
+        <div
+          role="status"
+          className="mb-5 flex items-center justify-between gap-3 rounded-xl bg-success-soft px-4 py-3 text-success"
+        >
+          <p className="font-semibold">{notice}</p>
+          <button
+            type="button"
+            aria-label="Dismiss message"
+            onClick={() => setNotice(null)}
+            className="rounded p-1 hover:bg-card/50"
+          >
+            <X className="size-4" aria-hidden="true" />
+          </button>
+        </div>
+      )}
+
+      <Card className="mb-5 p-5">
+        <div className="grid items-end gap-4 lg:grid-cols-[minmax(0,1.4fr)_repeat(2,minmax(0,0.5fr))]">
+          <div className="grid gap-1.5 text-sm">
+            <label htmlFor="booking-search">Search</label>
+            <Input
+              id="booking-search"
+              type="search"
+              icon={<Search />}
+              value={search}
+              onChange={(event) => {
+                setSearch(event.target.value)
+                setPageSize(PAGE_STEP)
+              }}
+              placeholder="Title, room or reference..."
+              className="h-12"
+            />
+          </div>
+          <div className="grid gap-1.5 text-sm">
+            <label htmlFor="booking-from">From date</label>
+            <Input
+              id="booking-from"
+              type="date"
+              value={from}
+              onChange={(event) => setFrom(event.target.value)}
+              className="h-12"
+            />
+          </div>
+          <div className="grid gap-1.5 text-sm">
+            <label htmlFor="booking-to">To date</label>
+            <Input
+              id="booking-to"
+              type="date"
+              value={to}
+              onChange={(event) => setTo(event.target.value)}
+              className="h-12"
+            />
+          </div>
+        </div>
+        {invalidRange && (
+          <p role="alert" className="mt-3 text-sm text-destructive">
+            &quot;From date&quot; must be on or before &quot;To date&quot;.
+          </p>
+        )}
+        <div role="group" aria-label="Filter by status" className="mt-4 flex flex-wrap gap-2">
+          {statusFilters.map((value) => (
+            <button
+              key={value || 'all'}
+              type="button"
+              aria-pressed={status === value}
+              onClick={() => {
+                setStatus(value)
+                setPageSize(PAGE_STEP)
+              }}
+              className={cn(
+                'min-h-10 rounded-xl border px-4 text-sm whitespace-nowrap transition-colors',
+                status === value
+                  ? 'border-primary bg-primary font-bold text-primary-foreground shadow-sm'
+                  : 'border-input bg-card hover:bg-secondary',
+              )}
+            >
+              {value || 'All'}
+            </button>
+          ))}
+        </div>
+      </Card>
+
+      <Card className="p-5">
+        {isPending && (
+          <div role="status" className="grid gap-3">
+            <span className="sr-only">Loading bookings</span>
+            {[0, 1, 2].map((i) => (
+              <Skeleton key={i} className="h-24 rounded-2xl" />
+            ))}
+          </div>
+        )}
+        {isError && (
+          <div role="alert" className="py-8 text-center text-sm">
+            <p className="text-destructive">{getErrorMessage(error)}</p>
+            <Button variant="link" onClick={() => void refetch()}>
+              Try again
+            </Button>
+          </div>
+        )}
+        {!isPending && !isError && items.length === 0 && (
+          <EmptyState>No bookings match your filters.</EmptyState>
+        )}
+        <ul
+          aria-busy={isPlaceholderData}
+          className={cn('grid gap-3', isPlaceholderData && 'opacity-60')}
+        >
+          {items.map((booking) => (
+            <BookingCard key={booking.id} booking={booking} onCancel={setCancelTarget} />
+          ))}
+        </ul>
+        {items.length > 0 && (
+          <div className="mt-5 flex flex-col items-center gap-3 text-sm text-muted-foreground sm:flex-row sm:justify-between">
+            <span>
+              Showing {items.length} of {total} bookings
+            </span>
+            {items.length < total && (
+              <Button variant="outline" onClick={() => setPageSize(pageSize + PAGE_STEP)}>
+                Show more
+              </Button>
+            )}
+          </div>
+        )}
+      </Card>
+
+      <CancelBookingDialog
+        booking={cancelTarget}
+        onClose={() => setCancelTarget(null)}
+        onCancelled={() => {
+          setCancelTarget(null)
+          setNotice('Booking cancelled.')
+        }}
+      />
+    </div>
+  )
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/roomTone.js
+/**
+ * Room colour-coding uses the theme's tone tokens (theme.css), never raw colours.
+ * Full class names (not built dynamically) so Tailwind can detect them.
+ */
+const tones = {
+  green: {
+    dot: 'bg-tone-green-border',
+    solid: 'bg-tone-green-solid',
+    event: 'border-l-4 border-tone-green-border bg-tone-green-bg',
+  },
+  blue: {
+    dot: 'bg-tone-blue-border',
+    solid: 'bg-tone-blue-solid',
+    event: 'border-l-4 border-tone-blue-border bg-tone-blue-bg',
+  },
+  purple: {
+    dot: 'bg-tone-purple-border',
+    solid: 'bg-tone-purple-solid',
+    event: 'border-l-4 border-tone-purple-border bg-tone-purple-bg',
+  },
+  orange: {
+    dot: 'bg-tone-orange-border',
+    solid: 'bg-tone-orange-solid',
+    event: 'border-l-4 border-tone-orange-border bg-tone-orange-bg',
+  },
+  teal: {
+    dot: 'bg-tone-teal-border',
+    solid: 'bg-tone-teal-solid',
+    event: 'border-l-4 border-tone-teal-border bg-tone-teal-bg',
+  },
+  rose: {
+    dot: 'bg-tone-rose-border',
+    solid: 'bg-tone-rose-solid',
+    event: 'border-l-4 border-tone-rose-border bg-tone-rose-bg',
+  },
+  amber: {
+    dot: 'bg-tone-amber-border',
+    solid: 'bg-tone-amber-solid',
+    event: 'border-l-4 border-tone-amber-border bg-tone-amber-bg',
+  },
+}
+
+export const toneOrder = Object.keys(tones)
+
+export function toneStyles(tone) {
+  return tones[tone] ?? tones.green
+}
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/status.js
+import { todayLocal } from './format'
+
+/** isCancelled wins; then isApproved: true = Accepted, false = Rejected, null = Pending. */
+export function getBookingStatus({ isCancelled, isApproved }) {
+  if (isCancelled === true) return 'Cancelled'
+  if (isApproved === true) return 'Accepted'
+  if (isApproved === false) return 'Rejected'
+  return 'Pending'
+}
+
+export const isPastBooking = (booking) => booking.date < todayLocal()
+
+export const canEditBooking = (booking) => booking.status === 'Pending' && !isPastBooking(booking)
+
+export const canCancelBooking = (booking) =>
+  (booking.status === 'Pending' || booking.status === 'Accepted') && !isPastBooking(booking)
+
+export const canCommentOnBooking = (booking) => booking.status !== 'Cancelled'
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/status.test.js
+import { describe, expect, it } from 'vitest'
+import { getBookingStatus } from './status'
+
+describe('getBookingStatus', () => {
+  it('maps the approval flags to a status', () => {
+    expect(getBookingStatus({ isCancelled: false, isApproved: null })).toBe('Pending')
+    expect(getBookingStatus({ isCancelled: false, isApproved: true })).toBe('Accepted')
+    expect(getBookingStatus({ isCancelled: false, isApproved: false })).toBe('Rejected')
+  })
+  it('lets cancelled win over approval', () => {
+    expect(getBookingStatus({ isCancelled: true, isApproved: true })).toBe('Cancelled')
+  })
+})
+@@@ END
+@@@ FILE src/features/meeting-room-bookings/types.js
+export const MEETING_ROOMS_PATH = '/admin/meeting-room-bookings'
+
+export const bookingStatuses = ['Pending', 'Accepted', 'Rejected', 'Cancelled']
+
+export const calendarViews = [
+  { id: 'month', label: 'Month' },
+  { id: 'week', label: 'Week' },
+  { id: 'day', label: 'Day' },
+  { id: 'list', label: 'List' },
+]
+
+/**
+ * @typedef {Object} MeetingRoom
+ * @property {string} id
+ * @property {string} name
+ * @property {string} location Building or group, e.g. "Corp-I"
+ * @property {number} capacity
+ * @property {string[]} facilities
+ * @property {string} tone Theme tone used to colour-code the room
+ */
+
+/**
+ * One row per day.
+ * @typedef {Object} Booking
+ * @property {string} id
+ * @property {string} roomId
+ * @property {string} roomName
+ * @property {string} date "YYYY-MM-DD"
+ * @property {string} startTime "HH:mm"
+ * @property {string} endTime "HH:mm"
+ * @property {string} title
+ * @property {number} persons
+ * @property {string} additionalRequest
+ * @property {'Pending' | 'Accepted' | 'Rejected' | 'Cancelled'} status Derived from isApproved / isCancelled
+ * @property {string} managerRemarks Filled when the manager rejects
+ * @property {string} createdOn ISO timestamp
+ * @property {TimelineEntry[]} [timeline]
+ */
+
+/**
+ * @typedef {Object} TimelineEntry
+ * @property {string} id
+ * @property {'created' | 'approved' | 'rejected' | 'cancelled' | 'comment' | 'edited'} type
+ * @property {string} actor
+ * @property {string} message
+ * @property {string} at ISO timestamp
+ */
+
+export {}
+@@@ END
+@@@ FILE src/features/modules/pages/ModulePage.jsx
+import { useAbility } from '@casl/react'
+import { ChevronRight } from 'lucide-react'
+import { Link, useLocation } from 'react-router-dom'
+import { PageBreadcrumbs } from '@/components/layout/PageBreadcrumbs'
+import { PageHero } from '@/components/layout/PageHero'
+import { Card } from '@/components/ui/card'
+import { findModuleTrail } from '@/config/modules'
+import NotFoundPage from '@/features/errors/pages/NotFoundPage'
+import { usePageMeta } from '@/hooks/usePageMeta'
+
+/** Landing page for a module: lists its sub modules, or a "coming soon" note if it has none. */
+export default function ModulePage() {
+  const { pathname } = useLocation()
+  const ability = useAbility()
+  const trail = findModuleTrail(pathname)
+  const module = trail.at(-1)
+  usePageMeta(module?.name, module?.summary)
+  if (!module) return <NotFoundPage />
+
+  const Icon = module.icon ?? trail[0].icon
+  const children = (module.children ?? []).filter((child) => ability.can('view', child.id))
+  const crumbs = trail.map((item, index) => ({
+    label: item.name,
+    to: index < trail.length - 1 ? item.path : undefined,
+  }))
+
+  return (
+    <div className="mx-auto max-w-[100rem]">
+      <PageBreadcrumbs items={crumbs} />
+      <PageHero icon={<Icon />} title={module.name} description={module.summary} />
+      {children.length > 0 ? (
+        <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {children.map((child) => (
+            <li key={child.id}>
+              <Card className="transition hover:-translate-y-0.5 hover:shadow-md">
+                <Link
+                  to={child.path}
+                  className="flex items-center justify-between gap-3 rounded-2xl p-5"
+                >
+                  <span className="min-w-0">
+                    <b className="block font-semibold">{child.name}</b>
+                    <span className="mt-1 block text-sm text-muted-foreground">
+                      {child.summary}
+                    </span>
+                  </span>
+                  <ChevronRight className="size-5 shrink-0 text-primary" aria-hidden="true" />
+                </Link>
+              </Card>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="rounded-2xl border border-border bg-card p-8 text-center shadow-sm">
+          <p className="font-semibold">This section is being moved to the new portal.</p>
+          <p className="mt-2 text-muted-foreground">
+            {module.name} tools will appear here soon. Until then, continue to use the existing
+            portal for this area.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+@@@ END
+@@@ FILE src/lib/ability.js
+import { createMongoAbility } from '@casl/ability'
+import { flattenModules } from '@/config/modules'
+
+/** Modules that need a specific role. Admin is open to every employee, as in the old portal. */
+const restrictedModules = {}
+
+/**
+ * Builds the permission set for a signed-in user.
+ * Roles come from the .NET login response (`user.roles`).
+ */
+export function defineAbilityFor(roles) {
+  // Not signed in: no permissions at all.
+  if (!roles) return createMongoAbility([])
+  const userRoles = roles
+  const rules = []
+  if (userRoles.includes('admin')) {
+    rules.push({ action: 'manage', subject: 'all' })
+  } else {
+    for (const { id } of flattenModules()) {
+      const required = restrictedModules[id]
+      if (!required || userRoles.includes(required)) {
+        rules.push({ action: 'view', subject: id })
+      }
+    }
+    rules.push(
+      { action: 'create', subject: 'gate-pass' },
+      { action: 'update', subject: 'gate-pass' },
+      { action: 'create', subject: 'meeting-room-bookings' },
+      { action: 'update', subject: 'meeting-room-bookings' },
+    )
+  }
+  return createMongoAbility(rules)
+}
+@@@ END
+@@@ FILE src/lib/ability.test.js
+import { describe, expect, it } from 'vitest'
+import { defineAbilityFor } from './ability'
+
+describe('defineAbilityFor', () => {
+  it('lets employees open every module, including Admin and Gate Pass', () => {
+    const ability = defineAbilityFor(['employee'])
+    expect(ability.can('view', 'gate-pass')).toBe(true)
+    expect(ability.can('view', 'hr')).toBe(true)
+    expect(ability.can('view', 'admin')).toBe(true)
+  })
+  it('lets admins open Admin', () => {
+    expect(defineAbilityFor(['employee', 'admin']).can('view', 'admin')).toBe(true)
+  })
+  it('denies everything when signed out', () => {
+    expect(defineAbilityFor(undefined).can('create', 'gate-pass')).toBe(false)
+  })
+})
+@@@ END
+@@@ FILE src/styles/theme.css
+/*
+ * ============================================================================
+ *  THEME - the ONE place to change the look of the whole portal.
+ *
+ *  Font      -> the @import below + --font-family-sans
+ *  Colours   -> the "Colours" block in :root
+ *  Font size -> --font-size-base (every rem-based size scales from it)
+ *  Radius    -> --radius
+ *  Layout    -> --spacing-sidebar / --spacing-topbar in @theme
+ *
+ *  Do not hard-code colours, fonts or sizes anywhere else in the codebase.
+ * ============================================================================
+ */
+
+/* Font file (self-hosted via npm, no external request). To switch font, install
+   another @fontsource package, change this import and --font-family-sans. */
+@import '@fontsource-variable/inter';
+
+:root {
+  /* ---- Typography ---------------------------------------------------- */
+  --font-family-sans: 'Inter Variable', 'Segoe UI', system-ui, -apple-system, Arial, sans-serif;
+  --font-size-base: 16px; /* 1rem. Make it 17px/18px to enlarge the whole UI. */
+
+  /* ---- Shape --------------------------------------------------------- */
+  --radius: 0.75rem;
+
+  /* ---- Colours: surfaces & text ------------------------------------- */
+  --background: #f7fafb;
+  --foreground: #161b20;
+  --card: #ffffff;
+  --card-foreground: #161b20;
+  --popover: #ffffff;
+  --popover-foreground: #161b20;
+  --muted: #eef3f2;
+  --muted-foreground: #56616b;
+
+  /* ---- Colours: brand ------------------------------------------------ */
+  --primary: #006b3c;
+  --primary-hover: #005430;
+  --primary-foreground: #ffffff;
+  --primary-soft: #e9f7ed; /* light green panels, icon chips */
+  --primary-soft-foreground: #07592f;
+  --secondary: #edf8f1;
+  --secondary-foreground: #006b3c;
+  --accent: #e9f7ed;
+  --accent-foreground: #07592f;
+  --brand-dark: #004b32;
+  --brand-mid: #007248;
+  --brand-light: #72cbb4;
+  --brand-highlight: #65cf74;
+
+  /* ---- Colours: feedback -------------------------------------------- */
+  --destructive: #b42318;
+  --destructive-foreground: #ffffff;
+  --success: #155b2b;
+  --success-soft: #e0f6df;
+  --warning: #7a5603;
+  --warning-soft: #fff3d8;
+  --danger: #9c2c26;
+  --danger-soft: #fde5e4;
+
+  /* ---- Colours: lines & focus --------------------------------------- */
+  --border: #e1e8e9;
+  --input: #cfd9df;
+  --ring: #087343;
+
+  /* ---- Colours: sidebar --------------------------------------------- */
+  --sidebar: #004b32;
+  --sidebar-foreground: #f2fbf5;
+  --sidebar-hover: rgb(255 255 255 / 0.1);
+  --sidebar-border: rgb(255 255 255 / 0.12);
+  --sidebar-active: #edfff0;
+  --sidebar-active-foreground: #00532f;
+
+  /* ---- Colours: application tiles on the dashboard ------------------ */
+  --tone-orange-border: #ffbf91;
+  --tone-orange-bg: #fff4e9;
+  --tone-green-border: #97d49c;
+  --tone-green-bg: #effbef;
+  --tone-purple-border: #b497ff;
+  --tone-purple-bg: #f5f0ff;
+  --tone-rose-border: #ff91a0;
+  --tone-rose-bg: #fff0f2;
+  --tone-teal-border: #66dbbb;
+  --tone-teal-bg: #eafff8;
+  --tone-amber-border: #ffbe25;
+  --tone-amber-bg: #fff9e6;
+  --tone-blue-border: #81aaff;
+  --tone-blue-bg: #eff5ff;
+  --tone-orange-solid: #d9650f; /* strong room colour, white text on top */
+  --tone-green-solid: #2f8f4e; /* strong room colour, white text on top */
+  --tone-purple-solid: #7c4dcc; /* strong room colour, white text on top */
+  --tone-rose-solid: #b8324a; /* strong room colour, white text on top */
+  --tone-teal-solid: #12957a; /* strong room colour, white text on top */
+  --tone-amber-solid: #a87500; /* strong room colour, white text on top */
+  --tone-blue-solid: #2a56c6; /* strong room colour, white text on top */
+
+  /* ---- Gradients ----------------------------------------------------- */
+  --gradient-brand: linear-gradient(
+    145deg,
+    var(--brand-mid) 0%,
+    var(--brand-dark) 56%,
+    #00603e 100%
+  );
+}
+
+/* Maps the variables above to Tailwind utilities (bg-primary, text-muted-foreground, ...). */
+@theme inline {
+  --font-sans: var(--font-family-sans);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-soft-foreground: var(--primary-soft-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-brand-dark: var(--brand-dark);
+  --color-brand-mid: var(--brand-mid);
+  --color-brand-light: var(--brand-light);
+  --color-brand-highlight: var(--brand-highlight);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-hover: var(--sidebar-hover);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-active: var(--sidebar-active);
+  --color-sidebar-active-foreground: var(--sidebar-active-foreground);
+
+  --color-tone-orange-border: var(--tone-orange-border);
+  --color-tone-orange-bg: var(--tone-orange-bg);
+  --color-tone-green-border: var(--tone-green-border);
+  --color-tone-green-bg: var(--tone-green-bg);
+  --color-tone-purple-border: var(--tone-purple-border);
+  --color-tone-purple-bg: var(--tone-purple-bg);
+  --color-tone-rose-border: var(--tone-rose-border);
+  --color-tone-rose-bg: var(--tone-rose-bg);
+  --color-tone-teal-border: var(--tone-teal-border);
+  --color-tone-teal-bg: var(--tone-teal-bg);
+  --color-tone-amber-border: var(--tone-amber-border);
+  --color-tone-amber-bg: var(--tone-amber-bg);
+  --color-tone-orange-solid: var(--tone-orange-solid);
+  --color-tone-green-solid: var(--tone-green-solid);
+  --color-tone-purple-solid: var(--tone-purple-solid);
+  --color-tone-rose-solid: var(--tone-rose-solid);
+  --color-tone-teal-solid: var(--tone-teal-solid);
+  --color-tone-amber-solid: var(--tone-amber-solid);
+  --color-tone-blue-solid: var(--tone-blue-solid);
+  --color-tone-blue-border: var(--tone-blue-border);
+  --color-tone-blue-bg: var(--tone-blue-bg);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+}
+
+/* Layout dimensions (generate w-sidebar, ml-sidebar, h-topbar, ...). */
+@theme {
+  --spacing-sidebar: 16.625rem;
+  --spacing-sidebar-collapsed: 4.875rem;
+  --spacing-topbar: 4.375rem;
+}
+
+@utility bg-brand-gradient {
+  background: var(--gradient-brand);
+}
+@@@ END
